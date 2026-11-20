@@ -106,6 +106,24 @@ describe('GET /healthz', () => {
   })
 })
 
+describe('GET /', () => {
+  it('免鉴权重定向到 /ui', async () => {
+    const response = await handle(new Request('https://smriti.example.com/'), accessEnv(), ctx)
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('https://smriti.example.com/ui')
+  })
+
+  it('GET /index.html 同样重定向', async () => {
+    const response = await handle(
+      new Request('https://smriti.example.com/index.html'),
+      accessEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('https://smriti.example.com/ui')
+  })
+})
+
 describe('健康检查与 404', () => {
   it('GET /v1/health（dev）返回 200', async () => {
     const response = await handle(new Request('https://smriti.example.com/v1/health'), devEnv(), ctx)

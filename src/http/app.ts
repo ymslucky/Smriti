@@ -293,6 +293,11 @@ export async function handle(
     // 存活探针：不鉴权，供 Cloudflare 健康检查使用。
     if (pathname === '/healthz' && method === 'GET') return json({ ok: true })
 
+    // 根路径跳到只读视图；/ui 仍由 Access 鉴权。
+    if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+      return Response.redirect(new URL('/ui', url).toString(), 302)
+    }
+
     const denied = await authenticate(request, env)
     if (denied) return denied
 

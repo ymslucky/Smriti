@@ -30,7 +30,8 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 
 - 资源：`public/ui/{index.html,styles.css,app.js}`，零依赖、无构建步骤。
 - 设计：`PRODUCT.md`、`DESIGN.md`、`docs/ui.md`（令牌、状态矩阵、对比度与验证记录）。
-- 路由：`GET /ui`、`/ui/*`，先过 Access 鉴权，再由 `ASSETS` 绑定提供静态文件。
+- 路由：`GET /ui`、`/ui/*`，先过 Access 鉴权，再由 `ASSETS` 绑定提供静态文件；`GET /` 会 302 到 `/ui`。
+- 注意：`workers.dev` 域名不经过 Access，直接访问会得到 401；请使用绑定了 Access 的自定义域名，或在本地/临时部署时用 `AUTH_MODE=dev`。
 
 ## API
 
