@@ -50,12 +50,20 @@ class HttpError extends Error {
   }
 }
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS })
+function json(body: unknown, status = 200, headers?: Record<string, string>): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...JSON_HEADERS, ...headers },
+  })
 }
 
-function jsonError(status: number, code: string, message: string): Response {
-  return json({ error: { code, message } }, status)
+function jsonError(
+  status: number,
+  code: string,
+  message: string,
+  headers?: Record<string, string>,
+): Response {
+  return json({ error: { code, message } }, status, headers)
 }
 
 /** 按项目模块工厂组装依赖；每个请求一份，薄封装后面可换成请求级缓存。 */
@@ -345,8 +353,17 @@ export async function handle(
 
     if (pathname === '/v1/health' && method === 'GET') return json({ ok: true })
 
-    if (pathname === '/mcp' && method === 'POST') {
-      return createMcpFetchHandler(() => env)(request, env, ctx)
+    if (pathname === '/mcp') {
+      if (method === 'POST') {
+        return createMcpFetchHandler(() => env)(request, env, ctx)
+      }
+      // 浏览器直接打开 /mcp 会走到这里：说明它是 MCP 的 JSON-RPC 端点，不是网页。
+      return jsonError(
+        405,
+        'method_not_allowed',
+        'MCP Streamable HTTP endpoint: send JSON-RPC with POST. Browsers cannot open it directly; see /ui for the dashboard.',
+        { allow: 'POST' },
+      )
     }
 
     // 只有 POST 的 approve/reject 才算命中路由；其它方法走 404。

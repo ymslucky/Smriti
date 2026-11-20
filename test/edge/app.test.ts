@@ -349,6 +349,17 @@ describe('/v1 REST', () => {
   })
 })
 
+describe('GET /mcp', () => {
+  it('返回 405 并提示使用 POST', async () => {
+    const response = await handle(new Request('https://smriti.example.com/mcp'), devEnv(), ctx)
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('POST')
+    await expect(bodyOf(response)).resolves.toEqual({
+      error: { code: 'method_not_allowed', message: expect.stringContaining('POST') },
+    })
+  })
+})
+
 describe('POST /mcp', () => {
   const MCP_HEADERS = {
     'content-type': 'application/json',
