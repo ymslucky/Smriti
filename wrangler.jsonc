@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "smriti",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // P0-2：wrangler 侧的 Node 兼容 flag（jose / MCP SDK 依赖 node 内置能力）。
+  "compatibility_flags": ["nodejs_compat"],
+  // WebUI 静态资源：Worker 优先处理请求（run_worker_first），/ui 由 handle 鉴权后
+  // 再交给 env.ASSETS；未匹配到资源时交回 Worker（not_found_handling: none）。
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "none"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEMORY",
+      "bucket_name": "smriti-memory"
+    }
+  ],
+  "ai_search_namespaces": [
+    {
+      "binding": "AI_SEARCH",
+      "namespace": "default",
+      "remote": true
+    }
+  ],
+  "vars": {
+    "AI_SEARCH_INSTANCE": "memory",
+    "SYNC_INTERVAL_SECONDS": "900",
+    "AUTH_MODE": "access"
+  },
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  }
+}
