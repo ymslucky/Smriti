@@ -30,9 +30,11 @@
     }
   ],
   "vars": {
+    "ACCESS_AUD": "00883228bd3d93c494f3588fb10f6fd79b144fd1459853fff7933b2dff596c3c",
+    "ACCESS_TEAM_DOMAIN": "ymslucky.cloudflareaccess.com",
     "AI_SEARCH_INSTANCE": "memory",
-    "SYNC_INTERVAL_SECONDS": "900",
-    "AUTH_MODE": "access"
+    "AUTH_MODE": "access",
+    "SYNC_INTERVAL_SECONDS": "900"
   },
   "triggers": {
     "crons": ["17 3 * * *"]
