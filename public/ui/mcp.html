@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MCP 接入教程 · Smriti</title>
+<meta name="description" content="GET /mcp 的 405 说明：这是 MCP Streamable HTTP 端点，只接受 POST 的 JSON-RPC。含 30 秒验证、错误码对照与 dsh 接入步骤。" />
+<meta name="color-scheme" content="light dark" />
+<meta name="theme-color" content="#24483A" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#1B3A2F" media="(prefers-color-scheme: dark)" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2324483a'/%3E%3Crect x='7' y='7' width='4' height='18' fill='%23edf1e6'/%3E%3Crect x='14' y='7' width='11' height='3' fill='%23edf1e6'/%3E%3Crect x='14' y='14' width='11' height='3' fill='%23edf1e6'/%3E%3Crect x='14' y='21' width='7' height='3' fill='%23b7c9bd'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/ui/styles.css" />
+<link rel="stylesheet" href="/ui/mcp.css" />
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+
+<header class="binding">
+  <div class="binding__inner">
+    <h1 class="brand">
+      <span class="brand__name">Smriti</span>
+      <span class="brand__note">MCP 接入教程</span>
+    </h1>
+    <div class="binding__aside">
+      <p class="mcp-flag"><span class="mcp-flag__mark" aria-hidden="true"></span>HTTP 405 <span class="mcp-flag__sep" aria-hidden="true">·</span> 预期行为</p>
+      <a class="btn btn--onbind" href="/ui">返回看板</a>
+    </div>
+  </div>
+</header>
+
+<nav class="sections" aria-label="本页章节">
+  <ul class="sections__list">
+    <li><a class="sections__link" href="#endpoint">这个端点是什么</a></li>
+    <li><a class="sections__link" href="#why-405">为什么是 405</a></li>
+    <li><a class="sections__link" href="#verify">30 秒验证</a></li>
+    <li><a class="sections__link" href="#errors">错误码</a></li>
+    <li><a class="sections__link" href="#next">接下来</a></li>
+  </ul>
+</nav>
+
+<main id="main" tabindex="-1">
+  <section class="section" id="endpoint" tabindex="-1" aria-labelledby="endpoint-title">
+    <div class="section__head">
+      <h2 class="section__title" id="endpoint-title">这个端点是什么</h2>
+      <p class="section__meta">MCP Streamable HTTP</p>
+    </div>
+
+    <p class="prose">
+      <code>/mcp</code> 是 Smriti 的机器接口：MCP 客户端把 JSON-RPC 2.0 请求用 <code>POST</code> 发过来，用它读写持久偏好。它不提供网页，也没有可以点开的界面。
+    </p>
+
+    <dl class="facts">
+      <div class="facts__cell">
+        <dt class="facts__label">传输</dt>
+        <dd class="facts__value">Streamable HTTP</dd>
+      </div>
+      <div class="facts__cell">
+        <dt class="facts__label">协议</dt>
+        <dd class="facts__value">JSON-RPC 2.0</dd>
+      </div>
+      <div class="facts__cell">
+        <dt class="facts__label">方法</dt>
+        <dd class="facts__value"><code>POST</code><span class="facts__aside">仅此一个方法，响应头声明 <code>Allow: POST</code></span></dd>
+      </div>
+    </dl>
+
+    <h3 class="subhead" id="tools-title">六个工具</h3>
+    <table class="doc-table tools-table" aria-labelledby="tools-title">
+      <caption>工具名与参数由 <code>src/mcp/server.ts</code> 注册，调用参数一律 snake_case。</caption>
+      <thead>
+        <tr>
+          <th scope="col">工具</th>
+          <th scope="col">做什么</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="cell-tool"><code>memory_search</code></td>
+          <td class="cell-desc">在已保存的偏好里检索。query 必填，topic 可选，limit 默认 10、上限 50。</td>
+        </tr>
+        <tr>
+          <td class="cell-tool"><code>memory_get</code></td>
+          <td class="cell-desc">按 topic 与 id 读一条；不存在时返回 <code>memory: null</code>。</td>
+        </tr>
+        <tr>
+          <td class="cell-tool"><code>memory_topics</code></td>
+          <td class="cell-desc">列出 12 个固定主题词表，以及每个主题的条目数。</td>
+        </tr>
+        <tr>
+          <td class="cell-tool"><code>memory_upsert</code></td>
+          <td class="cell-desc">写入一条偏好。冲突或近似重复时不覆盖，返回 <code>status=pending_review</code> 并生成待裁决变更；可用 <code>idempotency_key</code> 安全重试。</td>
+        </tr>
+        <tr>
+          <td class="cell-tool"><code>memory_list</code></td>
+          <td class="cell-desc">列出偏好。topic 可选，limit 默认 50、上限 200。</td>
+        </tr>
+        <tr>
+          <td class="cell-tool"><code>memory_forget</code></td>
+          <td class="cell-desc">软删除一条：移入 history 保留 30 天，返回是否命中。reason 必填。</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 class="subhead" id="split-title">和 <code>/ui</code> 的分工</h3>
+    <dl class="split" aria-labelledby="split-title">
+      <div class="split__side">
+        <dt class="split__label">看板 <code>/ui</code></dt>
+        <dd class="split__copy">给人看。记忆、待裁决、主题，只读；写入与裁决在这里没有按钮，它们属于 dsh 命令和 MCP 工具。</dd>
+      </div>
+      <div class="split__side">
+        <dt class="split__label">端点 <code>/mcp</code></dt>
+        <dd class="split__copy">给模型和客户端用。dsh 插件通过它读写；两个入口共用同一份 R2 真源，看板读到的就是工具写下的。</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="section" id="why-405" tabindex="-1" aria-labelledby="why-405-title">
+    <div class="section__head">
+      <h2 class="section__title" id="why-405-title">为什么浏览器打开会看到 405</h2>
+      <p class="section__meta">GET /mcp</p>
+    </div>
+
+    <p class="prose">
+      地址栏回车发的是 <code>GET</code>，它是一次页面导航，不是一次 MCP 调用。MCP 客户端只向 <code>/mcp</code> 发 <code>POST</code> 的 JSON-RPC，所以服务器按 HTTP 方法语义拒绝其它方法：<code>405 Method Not Allowed</code>，并在响应头里声明 <code>Allow: POST</code>。
+    </p>
+
+    <figure class="code">
+      <figcaption class="code__bar">
+        <span class="code__lang" id="lang-headers">HTTP · 浏览器打开 /mcp 时收到的响应头</span>
+        <button class="btn btn--copy" type="button" data-copy-target="code-headers">复制</button>
+      </figcaption>
+      <div class="code__scroll" role="region" tabindex="0" aria-labelledby="lang-headers">
+<pre class="code__pre"><code id="code-headers">HTTP/1.1 405 Method Not Allowed
+Allow: POST
+Content-Type: text/html; charset=utf-8
+Cache-Control: no-store
+X-Content-Type-Options: nosniff</code></pre>
+      </div>
+      <p class="code__status" role="status"></p>
+    </figure>
+
+    <p class="prose">
+      同一个 405 有两种响应体：浏览器（<code>Accept</code> 含 <code>text/html</code>）拿到的就是本页；curl 和 MCP 客户端拿到的仍是 JSON 错误。状态码的含义不变——方法不对，不是服务坏了。
+    </p>
+
+    <figure class="code">
+      <figcaption class="code__bar">
+        <span class="code__lang" id="lang-json-error">JSON · curl 与 MCP 客户端收到的响应体</span>
+        <button class="btn btn--copy" type="button" data-copy-target="code-json-error">复制</button>
+      </figcaption>
+      <div class="code__scroll" role="region" tabindex="0" aria-labelledby="lang-json-error">
+<pre class="code__pre"><code id="code-json-error">{
+  "error": {
+    "code": "method_not_allowed",
+    "message": "MCP Streamable HTTP endpoint: send JSON-RPC with POST. Browsers cannot open it directly; see /ui for the dashboard."
+  }
+}</code></pre>
+      </div>
+      <p class="code__status" role="status"></p>
+    </figure>
+
+    <p class="aside">
+      判断服务是否活着，请请求 <code>GET /healthz</code>（免鉴权，返回 <code>{"ok":true}</code>）；<code>/mcp</code> 的 405 不是健康检查的信号。
+    </p>
+  </section>
+
+  <section class="section" id="verify" tabindex="-1" aria-labelledby="verify-title">
+    <div class="section__head">
+      <h2 class="section__title" id="verify-title">30 秒验证</h2>
+      <p class="section__meta">从浏览器到 curl</p>
+    </div>
+
+    <p class="prose">
+      最快的验证从已经登录的 <code>/ui</code> 开始；线上环境用带 Access service token 的 curl 最直接。两条路径最后都该看到同一组工具名。
+    </p>
+
+    <h3 class="subhead" id="verify-console">在 <code>/ui</code> 的 DevTools Console 里发一次 tools/list</h3>
+    <p class="prose">
+      打开 <code>/ui</code>，登录 Access，然后打开 DevTools → Console，粘贴并回车：
+    </p>
+
+    <figure class="code">
+      <figcaption class="code__bar">
+        <span class="code__lang" id="lang-console">JavaScript · /ui 的 DevTools Console</span>
+        <button class="btn btn--copy" type="button" data-copy-target="code-console">复制</button>
+      </figcaption>
+      <div class="code__scroll" role="region" tabindex="0" aria-labelledby="lang-console">
+<pre class="code__pre"><code id="code-console">const res = await fetch('/mcp', {
+  method: 'POST',
+  headers: {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+  },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+})
+console.log(res.status)
+const body = await res.text()
+console.log(body)</code></pre>
+      </div>
+      <p class="code__status" role="status"></p>
+    </figure>
+
+    <p class="prose">
+      预期 <code>res.status === 200</code>。响应可能是 <code>application/json</code>，也可能是 SSE（<code>event: message</code> 加一行 <code>data: {…}</code>），两者都正常。在输出里找 <code>result.tools</code>，应看到六个名字：<code>memory_search</code>、<code>memory_get</code>、<code>memory_topics</code>、<code>memory_upsert</code>、<code>memory_list</code>、<code>memory_forget</code>。
+    </p>
+
+    <p class="note">
+      浏览器同源 POST 会带 <code>Origin</code> 请求头，MCP SDK 默认只放行 localhost 来源：在自定义域名上执行这段代码会得到 403 <code>Invalid Origin</code>，这是客户端校验，不是 405。线上验证请用下面的 curl；本地 <code>wrangler dev</code>（localhost）不受影响。
+    </p>
+
+    <h3 class="subhead" id="verify-curl">用 curl 带 Access service token</h3>
+    <p class="prose">
+      service token 在 Zero Trust → Access → Service Tokens 里建（例如命名 <code>dsh-smriti</code>），Client Secret 只显示一次。把三个占位符换成你的值：
+    </p>
+
+    <figure class="code">
+      <figcaption class="code__bar">
+        <span class="code__lang" id="lang-curl">Shell · curl</span>
+        <button class="btn btn--copy" type="button" data-copy-target="code-curl">复制</button>
+      </figcaption>
+      <div class="code__scroll" role="region" tabindex="0" aria-labelledby="lang-curl">
+<pre class="code__pre"><code id="code-curl">curl -sS https://&lt;你的域名&gt;/mcp \
+  -H "CF-Access-Client-Id: &lt;CLIENT_ID&gt;" \
+  -H "CF-Access-Client-Secret: &lt;CLIENT_SECRET&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'</code></pre>
+      </div>
+      <p class="code__status" role="status"></p>
+    </figure>
+
+    <p class="prose">
+      输出同样是 JSON 或 SSE，六个工具名与上一节一致。如果返回 401，先看错误码表里的 Access 两行。
+    </p>
+
+    <h3 class="subhead" id="verify-order">initialize 与 tools/call 的标准顺序</h3>
+    <p class="prose">
+      自己写客户端时，按 MCP 的顺序发请求；官方 SDK（包括 dsh 插件用的客户端）会替你做前三步。
+    </p>
+    <ol class="steps">
+      <li><strong>initialize</strong>：带上 <code>protocolVersion</code>（当前按 <code>2025-06-18</code> 握手）、<code>capabilities</code> 与 <code>clientInfo</code>；服务端回 <code>serverInfo</code>（name 为 <code>smriti</code>）。</li>
+      <li><strong>notifications/initialized</strong>：一条通知，没有 <code>id</code>，不需要等响应。</li>
+      <li><strong>tools/list</strong>：拿到六个工具和各自的输入 schema。</li>
+      <li><strong>tools/call</strong>：<code>{"name":"memory_search","arguments":{"query":"包管理器"}}</code>，参数名用 snake_case。</li>
+    </ol>
+    <p class="prose">
+      服务端是 Streamable HTTP 的无状态实现，不返回会话 id；请求按顺序发即可，不要并发跳过 initialize。
+    </p>
+  </section>
+
+  <section class="section" id="errors" tabindex="-1" aria-labelledby="errors-title">
+    <div class="section__head">
+      <h2 class="section__title" id="errors-title">常见错误码</h2>
+      <p class="section__meta">响应体里的 code</p>
+    </div>
+
+    <table class="doc-table err-table" aria-labelledby="errors-title">
+      <caption>错误统一为 <code>{"error":{"code","message"}}</code>，先看状态码，再看 code。</caption>
+      <thead>
+        <tr>
+          <th scope="col">状态码与 code</th>
+          <th scope="col">含义</th>
+          <th scope="col">排查方向</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="cell-code"><code>401 unauthorized</code></td>
+          <td class="cell-meaning">请求没过 Cloudflare Access：缺少或无效的 <code>Cf-Access-Jwt-Assertion</code>。</td>
+          <td class="cell-check">确认请求经过 Access 应用；<code>workers.dev</code> 域名不经过 Access，要用自定义域名；Access 应用的策略覆盖到 <code>/mcp</code>；service token 属于该应用。</td>
+        </tr>
+        <tr>
+          <td class="cell-code"><code>500 auth_misconfigured</code></td>
+          <td class="cell-meaning">Worker 没配好 Access 校验：缺 <code>ACCESS_TEAM_DOMAIN</code> 或 <code>ACCESS_AUD</code>。</td>
+          <td class="cell-check"><code>wrangler secret list</code> 核对两个 secret；确认 <code>AUTH_MODE</code> 不是 <code>dev</code>；补上后重新部署。</td>
+        </tr>
+        <tr>
+          <td class="cell-code"><code>405 method_not_allowed</code></td>
+          <td class="cell-meaning">对 <code>/mcp</code> 用了 POST 以外的方法——包括浏览器直接打开，也就是本页。</td>
+          <td class="cell-check">客户端改用 <code>POST</code> 发 JSON-RPC；健康检查改用 <code>GET /healthz</code>。</td>
+        </tr>
+        <tr>
+          <td class="cell-code"><code>404 not_found</code></td>
+          <td class="cell-meaning">路由没匹配：路径或方法写错。</td>
+          <td class="cell-check">核对路径是 <code>/mcp</code>（没有尾斜杠），以及 <code>POST /v1/…</code> 与 <code>GET /v1/…</code> 的方法是否对得上。</td>
+        </tr>
+        <tr>
+          <td class="cell-code"><code>503 assets_unavailable</code></td>
+          <td class="cell-meaning"><code>ASSETS</code> 静态资源绑定缺失或取不到：<code>/ui</code> 的页面与静态文件不可用。</td>
+          <td class="cell-check">检查 <code>wrangler.jsonc</code> 的 assets 配置与部署产物里的 <code>public/</code>；<code>/mcp</code> 有内联兜底页，JSON-RPC 不受这一项影响。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="section" id="next" tabindex="-1" aria-labelledby="next-title">
+    <div class="section__head">
+      <h2 class="section__title" id="next-title">接下来</h2>
+      <p class="section__meta">装进 dsh</p>
+    </div>
+
+    <ol class="steps">
+      <li><strong>安装 Smriti-DSH 插件</strong>：先 <code>pnpm run build</code>，再 <code>dsh plugin add &lt;本机路径或 GitHub 仓库&gt;</code>；在插件配置里填 <code>gatewayUrl</code>，把 service token 写入 credentials 的 <code>CF_ACCESS_CLIENT_ID</code> / <code>CF_ACCESS_CLIENT_SECRET</code>。</li>
+      <li><strong>确认工具出现</strong>：重启 dsh，工具列表里应出现 <code>mcp__smriti__memory_search</code> 等六个工具，前缀全部是 <code>mcp__smriti__</code>。</li>
+      <li><strong>裁决仍走命令</strong>：冲突进入待裁决后，在 dsh 里用 <code>/memory review</code> 逐条看，用 <code>/memory approve &lt;changeId&gt;</code> 批准；页面上刻意没有裁决按钮。</li>
+    </ol>
+
+    <p class="prose">
+      部署、Access 与插件配置的完整步骤见仓库 <a href="https://github.com/ymslucky/Smriti/blob/master/README.md">README</a>；回到 <a href="/ui">/ui</a> 可以核对工具写下的记忆是否已经出现。
+    </p>
+  </section>
+</main>
+
+<footer class="colophon">
+  <p class="colophon__line">响应状态码固定为 <code>405</code>，并声明 <code>Allow: POST</code>：这是方法语义，不随页面内容改变。本页只是把「为什么」和「怎么接」写清楚。</p>
+  <p class="colophon__meta">GET /mcp · 405 Method Not Allowed</p>
+</footer>
+
+<script src="/ui/mcp.js"></script>
+</body>
+</html>

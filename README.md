@@ -2,7 +2,7 @@
 
 > 给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search 做检索，MCP 暴露读写工具。
 
-状态：M0–M4 代码完成，未部署（`typecheck` + 198 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，部署见 [docs/deploy.md](docs/deploy.md)。
+状态：M0–M4 完成，已部署（`typecheck` + 207 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
 
 ## 它做什么
 
@@ -31,6 +31,7 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 - 资源：`public/ui/{index.html,styles.css,app.js}`，零依赖、无构建步骤。
 - 设计：`PRODUCT.md`、`DESIGN.md`、`docs/ui.md`（令牌、状态矩阵、对比度与验证记录）。
 - 路由：`GET /ui`、`/ui/*`，先过 Access 鉴权，再由 `ASSETS` 绑定提供静态文件；`GET /` 会 302 到 `/ui`。
+- `/mcp` 只有 `POST` 可用：浏览器直接打开时仍是 405，但按 `Accept: text/html` 返回教程页（`public/ui/mcp.html`，ASSETS 缺失时回退内联页），其它客户端仍收到 405 JSON。
 - 注意：`workers.dev` 域名不经过 Access，直接访问会得到 401；请使用绑定了 Access 的自定义域名，或在本地/临时部署时用 `AUTH_MODE=dev`。
 
 ## API

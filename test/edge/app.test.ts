@@ -358,6 +358,121 @@ describe('GET /mcp', () => {
       error: { code: 'method_not_allowed', message: expect.stringContaining('POST') },
     })
   })
+
+  it('curl 默认 Accept: */* 仍得到 405 JSON（不改 MCP 客户端语义）', async () => {
+    const response = await handle(
+      new Request('https://smriti.example.com/mcp', { headers: { accept: '*/*' } }),
+      devEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('POST')
+    expect(response.headers.get('content-type')).toContain('application/json')
+    await expect(bodyOf(response)).resolves.toEqual({
+      error: { code: 'method_not_allowed', message: expect.stringContaining('POST') },
+    })
+  })
+
+  it('浏览器 Accept: text/html 时返回 405 + ASSETS 里的 /ui/mcp.html 教程页', async () => {
+    const { fetchMock, binding } = fakeAssets(async () =>
+      new Response('<html>MCP 教程</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      }),
+    )
+    const response = await handle(
+      new Request('https://smriti.example.com/mcp', {
+        headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
+      }),
+      devEnv({ ASSETS: binding }),
+      ctx,
+    )
+
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('POST')
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    await expect(response.text()).resolves.toBe('<html>MCP 教程</html>')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [assetRequest] = fetchMock.mock.calls[0] as unknown as [Request]
+    expect(assetRequest.method).toBe('GET')
+    expect(new URL(assetRequest.url).pathname).toBe('/ui/mcp.html')
+    expect(assetRequest.headers.get('accept')).toContain('text/html')
+  })
+
+  it('ASSETS 缺失时浏览器请求回退为内联 HTML（405，绝不 500）', async () => {
+    const response = await handle(
+      new Request('https://smriti.example.com/mcp', {
+        headers: { accept: 'text/html' },
+      }),
+      devEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('POST')
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    const body = await response.text()
+    expect(body).toContain('POST')
+    expect(body).toContain('href="/ui"')
+    expect(body).toContain('MCP')
+    expect(body).not.toContain('internal_error')
+  })
+
+  it('assets 取页抛错时同样回退为 405 HTML 而不是 500', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { binding } = fakeAssets(async () => {
+      throw new Error('assets exploded')
+    })
+    const response = await handle(
+      new Request('https://smriti.example.com/mcp', {
+        headers: { accept: 'text/html' },
+      }),
+      devEnv({ ASSETS: binding }),
+      ctx,
+    )
+    expect(response.status).toBe(405)
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(await response.text()).toContain('href="/ui"')
+    expect(errorSpy).toHaveBeenCalledWith(
+      'smriti: failed to serve /mcp tutorial asset',
+      expect.any(Error),
+    )
+    errorSpy.mockRestore()
+  })
+
+  it('非 POST 的其它方法（PUT/OPTIONS/DELETE）也走同一内容协商与 405', async () => {
+    for (const method of ['PUT', 'OPTIONS', 'DELETE']) {
+      const response = await handle(
+        new Request('https://smriti.example.com/mcp', { method }),
+        devEnv(),
+        ctx,
+      )
+      expect(response.status, method).toBe(405)
+      expect(response.headers.get('allow'), method).toBe('POST')
+      await expect(bodyOf(response)).resolves.toEqual({
+        error: { code: 'method_not_allowed', message: expect.stringContaining('POST') },
+      })
+    }
+  })
+
+  it('POST /mcp 不受内容协商影响，仍进入 MCP handler', async () => {
+    const response = await handle(
+      new Request('https://smriti.example.com/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      }),
+      devEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).not.toContain('text/html')
+  })
 })
 
 describe('POST /mcp', () => {

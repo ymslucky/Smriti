@@ -7,6 +7,9 @@
  * - 成功响应为 JSON，错误统一 `{ error: { code, message } }`；
  * - 未匹配的路由返回 404 JSON（含方法不匹配的情形）；
  * - 写入/裁决成功后由 `ctx.waitUntil` 异步同步 AI Search 索引（P0-3）。
+ *
+ * `/mcp` 的例外：非 POST 仍返回 405 + `Allow: POST`，但浏览器（`Accept`
+ * 含 `text/html`）拿到的是教程页而不是 JSON，见 `mcpMethodNotAllowed`。
  */
 
 import { authenticate } from '../auth/access'
@@ -35,6 +38,12 @@ const MAX_MEMORIES_LIMIT = 500
 const RECENT_MEMORY_LIMIT = 5
 /** `/ui` 与 `/ui/` 映射到的入口文件。 */
 const UI_INDEX_PATH = '/ui/index.html'
+/** 浏览器直接打开 `/mcp` 时展示的教程页（与 WebUI 同目录的静态资源）。 */
+const MCP_TUTORIAL_PATH = '/ui/mcp.html'
+
+/** 非 POST `/mcp` 的 JSON 提示文案：JSON/MCP 客户端与 curl 默认看到它。 */
+const MCP_METHOD_NOT_ALLOWED_MESSAGE =
+  'MCP Streamable HTTP endpoint: send JSON-RPC with POST. Browsers cannot open it directly; see /ui for the dashboard.'
 
 const PENDING_ACTION_ROUTE = /^\/v1\/pending\/([^/]+)\/(approve|reject)$/
 
@@ -253,6 +262,27 @@ function scheduleSearchSync(ctx: ExecutionContext, search: SearchIndex): void {
 }
 
 /**
+ * 构造发往 `ASSETS` 绑定的一次性 GET 请求。
+ *
+ * 只转发条件请求需要的头；原始请求头里的 Host/Cookie 等不应透传给 assets。
+ * `/ui/*` 与 `/mcp` 共用这一入口，保证取资源方式一致。
+ */
+function assetRequest(
+  request: Request,
+  assetUrl: URL,
+  options: { forwardIfNoneMatch?: boolean } = {},
+): Request {
+  const headers = new Headers()
+  const accept = request.headers.get('accept')
+  if (accept !== null) headers.set('accept', accept)
+  if (options.forwardIfNoneMatch) {
+    const ifNoneMatch = request.headers.get('if-none-match')
+    if (ifNoneMatch !== null) headers.set('if-none-match', ifNoneMatch)
+  }
+  return new Request(assetUrl.toString(), { method: 'GET', headers })
+}
+
+/**
  * `/ui` 静态资源：鉴权已在 `handle` 顶层完成，这里把请求转给 assets 绑定。
  * `/ui` 与 `/ui/` 映射到 `/ui/index.html`，其余 `/ui/*` 保持原路径。
  * 未配置绑定时返回 503，避免把部署配置问题伪装成 404。
@@ -271,21 +301,92 @@ async function serveUi(request: Request, env: Env, url: URL): Promise<Response> 
     assetUrl.pathname = UI_INDEX_PATH
   }
 
-  // 只转发条件请求需要的头；原始请求头里的 Host/Cookie 等不应透传给 assets。
-  const headers = new Headers()
-  const accept = request.headers.get('accept')
-  if (accept !== null) headers.set('accept', accept)
-  const ifNoneMatch = request.headers.get('if-none-match')
-  if (ifNoneMatch !== null) headers.set('if-none-match', ifNoneMatch)
-
   try {
     return await env.ASSETS.fetch(
-      new Request(assetUrl.toString(), { method: 'GET', headers }),
+      assetRequest(request, assetUrl, { forwardIfNoneMatch: true }),
     )
   } catch (error) {
     console.error('smriti: failed to serve /ui asset', error)
     return jsonError(503, 'assets_unavailable', 'Static assets are temporarily unavailable')
   }
+}
+
+/** 非 POST `/mcp` 的 JSON 提示：JSON/MCP 客户端与 curl 默认看到它。 */
+function mcpMethodNotAllowedJson(): Response {
+  return jsonError(405, 'method_not_allowed', MCP_METHOD_NOT_ALLOWED_MESSAGE, { allow: 'POST' })
+}
+
+/**
+ * 405 HTML 响应头：方法语义（`Allow: POST`）与 /ui 一样保持，但教程页
+ * 不缓存、不猜测类型（nosniff）。
+ */
+const MCP_TUTORIAL_HEADERS = {
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+  'x-content-type-options': 'nosniff',
+  allow: 'POST',
+}
+
+/**
+ * assets 缺失 / 取页失败时的最小内联教程页。
+ *
+ * 宁可少一点样式，也不能让浏览器看到 500 或 JSON：`ASSETS` 未配置、
+ * 取页抛错或资源不存在（如尚未部署 mcp.html）时都走到这里。
+ */
+function mcpTutorialFallback(): Response {
+  const body = `<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP 端点 · Smriti</title>
+<style>
+  body{font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:38rem;margin:12vh auto;padding:0 1.5rem;color:#232b26;background:#f2f3ed}
+  h1{font-size:1.5rem;margin:0 0 1rem}
+  p{margin:0 0 .75rem}
+  code{background:#e3e6da;padding:.1em .35em;border-radius:2px}
+  a{color:#1e5f8c}
+</style>
+<h1>这是 MCP 端点，不是网页</h1>
+<p><code>/mcp</code> 只接受 <code>POST</code>（MCP Streamable HTTP，JSON-RPC）。直接在浏览器里打开只能看到这份说明。</p>
+<p>MCP 客户端请把 JSON-RPC 请求 <code>POST</code> 到 <code>/mcp</code>；只读仪表盘在 <a href="/ui">/ui</a>。</p>
+</html>`
+  return new Response(body, { status: 405, headers: MCP_TUTORIAL_HEADERS })
+}
+
+/** 从 ASSETS 取教程页；绑定缺失或取页失败都返回 null，交给内联兜底。 */
+async function mcpTutorialPage(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response | null> {
+  if (!env.ASSETS) return null
+
+  try {
+    const asset = await env.ASSETS.fetch(
+      assetRequest(request, new URL(MCP_TUTORIAL_PATH, url.origin)),
+    )
+    if (!asset.ok) {
+      console.error(`smriti: /mcp tutorial asset returned ${asset.status}`)
+      return null
+    }
+    return new Response(await asset.text(), { status: 405, headers: MCP_TUTORIAL_HEADERS })
+  } catch (error) {
+    console.error('smriti: failed to serve /mcp tutorial asset', error)
+    return null
+  }
+}
+
+/**
+ * 非 POST `/mcp`：状态码与方法语义固定为 405 + `Allow: POST`。
+ *
+ * - `Accept` 含 `text/html`（浏览器）→ 教程页；ASSETS 缺失/失败时用内联页，
+ *   绝不返回 500；
+ * - 其它（JSON/MCP 客户端、curl 默认 `* / *`）→ 原有 JSON `method_not_allowed`。
+ */
+async function mcpMethodNotAllowed(request: Request, env: Env, url: URL): Promise<Response> {
+  const accept = request.headers.get('accept') ?? ''
+  if (!accept.toLowerCase().includes('text/html')) return mcpMethodNotAllowedJson()
+  return (await mcpTutorialPage(request, env, url)) ?? mcpTutorialFallback()
 }
 
 /**
@@ -357,13 +458,9 @@ export async function handle(
       if (method === 'POST') {
         return createMcpFetchHandler(() => env)(request, env, ctx)
       }
-      // 浏览器直接打开 /mcp 会走到这里：说明它是 MCP 的 JSON-RPC 端点，不是网页。
-      return jsonError(
-        405,
-        'method_not_allowed',
-        'MCP Streamable HTTP endpoint: send JSON-RPC with POST. Browsers cannot open it directly; see /ui for the dashboard.',
-        { allow: 'POST' },
-      )
+      // 浏览器直接打开 /mcp：它是 MCP 的 JSON-RPC 端点，不是网页。
+      // 内容协商后给浏览器教程页，给 MCP/JSON 客户端沿用原来的 405 JSON。
+      return mcpMethodNotAllowed(request, env, url)
     }
 
     // 只有 POST 的 approve/reject 才算命中路由；其它方法走 404。
