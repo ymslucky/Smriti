@@ -280,6 +280,40 @@ async function serveUi(request: Request, env: Env, url: URL): Promise<Response> 
   }
 }
 
+/**
+ * `/ui` 鉴权失败时给浏览器一个可读页面，而不是 JSON。
+ *
+ * 最常见的两种情况：直接访问 `workers.dev`（不经过 Access），或还没建
+ * Access 应用。两种都提示清楚，并给出临时调试办法。
+ */
+function uiAuthFailure(denied: Response): Response {
+  if (denied.status !== 401) return denied
+  const body = `<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>需要登录 · Smriti</title>
+<style>
+  body{font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:38rem;margin:12vh auto;padding:0 1.5rem;color:#232b26;background:#f2f3ed}
+  h1{font-size:1.5rem;margin:0 0 1rem}
+  p{margin:0 0 .75rem}
+  code{background:#e3e6da;padding:.1em .35em;border-radius:2px}
+  a{color:#1e5f8c}
+</style>
+<h1>需要 Cloudflare Access 登录</h1>
+<p>这个页面在 Access 之后。如果你访问的是 <code>*.workers.dev</code> 域名，它不经过 Access，请改用绑定了 Access 的自定义域名。</p>
+<p>如果还没有配置 Access：在 Cloudflare Zero Trust 里为这个域名建一个 Self-hosted 应用，策略允许你的邮箱，登录方式用 One-time PIN。</p>
+<p>临时调试：在 Worker 的变量里设置 <code>AUTH_MODE=dev</code> 并重新部署，就可以直接打开 <a href="/ui">/ui</a>。</p>
+</html>`
+  return new Response(body, {
+    status: 401,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  })
+}
+
 export async function handle(
   request: Request,
   env: Env,
@@ -299,7 +333,10 @@ export async function handle(
     }
 
     const denied = await authenticate(request, env)
-    if (denied) return denied
+    if (denied) {
+      if (pathname === '/ui' || pathname.startsWith('/ui/')) return uiAuthFailure(denied)
+      return denied
+    }
 
     // WebUI 静态资源（只读）：/ui 与 /ui/*，鉴权通过后交给 assets 绑定。
     if (method === 'GET' && (pathname === '/ui' || pathname.startsWith('/ui/'))) {

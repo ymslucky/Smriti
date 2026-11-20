@@ -734,7 +734,7 @@ describe('GET /ui 静态资源', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('AUTH_MODE=access 无 JWT 时 401，且不访问静态资源', async () => {
+  it('AUTH_MODE=access 无 JWT 时 401 HTML 提示，且不访问静态资源', async () => {
     const { fetchMock, binding } = fakeAssets()
     const response = await handle(
       new Request('https://smriti.example.com/ui'),
@@ -742,6 +742,8 @@ describe('GET /ui 静态资源', () => {
       ctx,
     )
     expect(response.status).toBe(401)
+    expect(response.headers.get('content-type')).toContain('text/html')
+    await expect(response.text()).resolves.toContain('Cloudflare Access')
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
