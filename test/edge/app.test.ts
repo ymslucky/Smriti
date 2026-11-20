@@ -493,6 +493,47 @@ describe('POST /mcp', () => {
     )
   }
 
+  function mcpPostWithOrigin(env: Env, origin: string, payload: unknown): Promise<Response> {
+    return handle(
+      new Request('https://smriti.example.com/mcp', {
+        method: 'POST',
+        headers: { ...MCP_HEADERS, origin },
+        body: JSON.stringify(payload),
+      }),
+      env,
+      ctx,
+    )
+  }
+
+  it('接受同源 Origin（浏览器 fetch）', async () => {
+    const response = await mcpPostWithOrigin(
+      devEnv(),
+      'https://smriti.example.com',
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    )
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).not.toContain('text/html')
+  })
+
+  it('拒绝跨源 Origin', async () => {
+    const response = await mcpPostWithOrigin(
+      devEnv(),
+      'https://evil.example.com',
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    )
+    expect(response.status).toBe(403)
+    await expect(response.text()).resolves.toContain('Invalid Origin')
+  })
+
+  it('MCP_ALLOWED_ORIGINS 可追加额外来源', async () => {
+    const response = await mcpPostWithOrigin(
+      devEnv({ MCP_ALLOWED_ORIGINS: 'https://admin.example.com' }),
+      'https://admin.example.com',
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    )
+    expect(response.status).toBe(200)
+  })
+
   /** 兼容 JSON 与 SSE 两种响应形态，抽出与请求 id 匹配的 JSON-RPC 消息。 */
   function parseRpc(text: string, contentType: string): Record<string, unknown> | undefined {
     if (contentType.includes('text/event-stream') || text.trimStart().startsWith('data:')) {

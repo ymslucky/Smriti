@@ -191,16 +191,48 @@ export function buildServer(env: Env): McpServer {
   return createSmritiMcpServer(createMemoryService({ store, search }))
 }
 
+/** 把一个 hostname 或 URL 规范成 hostname；非法值返回 undefined。 */
+function normalizeHostname(value: string): string | undefined {
+  const trimmed = value.trim()
+  if (trimmed === '') return undefined
+  try {
+    const url = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`)
+    return url.hostname
+  } catch {
+    return undefined
+  }
+}
+
+/** 同源总是放行；额外来源来自 `MCP_ALLOWED_ORIGINS`（逗号分隔）。 */
+function allowedMCPHosts(request: Request, env: Env): string[] {
+  const hosts = new Set<string>()
+  const self = normalizeHostname(new URL(request.url).hostname)
+  if (self !== undefined) hosts.add(self)
+  for (const item of (env.MCP_ALLOWED_ORIGINS ?? '').split(',')) {
+    const host = normalizeHostname(item)
+    if (host !== undefined) hosts.add(host)
+  }
+  return [...hosts]
+}
+
 /**
  * `/mcp` 的 fetch handler。
  *
  * `getEnv` 由调用方提供（HTTP 入口里就是当前请求的 env），这样
  * `createMcpHandler` 的工厂签名保持无参，同时能拿到请求级绑定。
+ *
+ * handler 按请求构造：`createMcpHandler` 的 Origin/Host 白名单是静态的，
+ * 而自定义域名只能从请求 URL 推导；同源放行，额外来源用
+ * `MCP_ALLOWED_ORIGINS` 追加。
  */
 export function createMcpFetchHandler(
   getEnv: () => Env,
 ): (request: Request, env: Env, ctx: ExecutionContext) => Promise<Response> {
-  const handler = createMcpHandler(() => buildServer(getEnv()))
-  return (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> =>
-    handler(request, env, ctx)
+  return (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
+    const hosts = allowedMCPHosts(request, getEnv())
+    const handler = createMcpHandler(() => buildServer(getEnv()), {
+      allowedOriginHostnames: hosts,
+    })
+    return handler(request, env, ctx)
+  }
 }

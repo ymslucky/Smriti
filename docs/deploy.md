@@ -67,6 +67,16 @@ wrangler secret put ACCESS_TEAM_DOMAIN   # 例如 myteam.cloudflareaccess.com
 wrangler secret put ACCESS_AUD           # Access 应用的 Audience
 ```
 
+## 6.1 MCP 来源（可选）
+
+`/mcp` 默认放行同源（请求的 Host）。如果还有其他前端域名要直接调用 MCP，加一个变量：
+
+```sh
+wrangler secret put MCP_ALLOWED_ORIGINS  # 逗号分隔，如 https://admin.example.com,https://smriti.example.com
+```
+
+不配也没关系；浏览器从 `/ui` 页面发起的同源 `fetch('/mcp', ...)` 会自动放行，跨源会返回 403 `Invalid Origin`。
+
 ## 7. 验证
 
 ```sh

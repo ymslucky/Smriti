@@ -20,6 +20,8 @@ export interface Env {
   SYNC_INTERVAL_SECONDS?: string
   /** wrangler assets 绑定，`/ui` 静态资源路由使用；本地未配置时缺失。 */
   ASSETS?: Fetcher
+  /** 额外的 MCP 允许来源（逗号分隔的 hostname 或 URL），同源总是自动放行。 */
+  MCP_ALLOWED_ORIGINS?: string
 }
 
 /** wrangler 注入的 R2Bucket 在结构上满足 MemoryStore 所需的窄接口。 */
