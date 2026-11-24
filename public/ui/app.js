@@ -434,9 +434,8 @@
     dom.statSearch.textContent = ready ? '就绪' : '未就绪';
     dom.statSearch.className =
       'totals__num totals__num--text ' + (ready ? 'is-ok' : 'is-warn');
-    dom.statSearchNote.textContent = ready
-      ? '语义检索可用'
-      : '检索可能降级为列表';
+    // 统计带的说明保持一行短语；具体原因放在下方运行状态的「检索」行，避免长文本撑坏版面。
+    dom.statSearchNote.textContent = ready ? '语义检索可用' : '检索降级为列表';
   }
 
   function renderRecent(items) {
@@ -523,6 +522,14 @@
       label: '鉴权',
       values: [{ text: authModeLabel(health.authMode), className: '' }]
     });
+
+    // 检索后端不健康时把原因摆到台面上：以前只显示"未就绪"，没人知道是实例没了。
+    if (health.aiSearch === false && text(health.searchError)) {
+      rows.push({
+        label: '检索',
+        values: [{ text: text(health.searchError), className: 'is-bad' }]
+      });
+    }
 
     rows.push({
       label: '数据获取',

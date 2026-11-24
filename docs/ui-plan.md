@@ -32,7 +32,7 @@
 
 | 方法 | 路径 | 响应 |
 |---|---|---|
-| GET | `/v1/stats` | `{ totals:{memories,pending,topics}, byTopic:[{topic,label,count}], recent:[{id,topic,statement,updatedAt}], health:{aiSearch:boolean,instance:string,authMode:string} }` |
+| GET | `/v1/stats` | `{ totals:{memories,pending,topics}, byTopic:[{topic,label,count}], recent:[{id,topic,statement,updatedAt}], health:{aiSearch:boolean,instance:string,authMode:string,searchError?:string} }`（`aiSearch` 是对 AI Search 的真实探活，`searchError` 仅在不健康时出现） |
 | GET | `/v1/memories?topic=&limit=` | `{ items: MemoryRecord[] }`，limit 默认 200、上限 500 |
 | GET | `/ui`、`/ui/*` | 静态资源（先鉴权，再 `env.ASSETS.fetch`） |
 

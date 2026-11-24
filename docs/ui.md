@@ -27,9 +27,9 @@ docs/ui.md     本文
 
 | 区块 | 端点 | 用法 |
 |---|---|---|
-| 概览·统计 | `GET /v1/stats` | `totals.{memories,pending,topics}`、`health.aiSearch` |
+| 概览·统计 | `GET /v1/stats` | `totals.{memories,pending,topics}`、`health.aiSearch`（真实探活结果，不是"绑定存在"） |
 | 概览·最近更新 | `GET /v1/stats` | `recent[]`（取前 5 条） |
-| 概览·运行状态 | `GET /v1/stats` + `GET /v1/health` | `health.{instance,authMode}`；健康检查取 `/v1/health` 是否 2xx |
+| 概览·运行状态 | `GET /v1/stats` + `GET /v1/health` | `health.{instance,authMode}`；`health.searchError` 仅在检索后端不健康时出现，渲染为「检索」行的砖红说明（统计带只留一句「检索降级为列表」）；健康检查取 `/v1/health` 是否 2xx |
 | 记忆·列表 | `GET /v1/memories?limit=200` | `items[]`（`topic/statement/version/updatedAt`） |
 | 记忆·检索 | `POST /v1/recall` `{query,limit:50}` | 命中项按 `id` 与已加载列表水合，补回 `version`/`updatedAt` |
 | 待裁决 | `GET /v1/pending` | `pending[]`（`changeId/kind/topic/current/proposed/createdAt`） |

@@ -52,7 +52,8 @@ Cloudflare Access 挡在自定义域名前：
 
 - Access token 过期：401，MCP 连接断开，插件只告警不阻塞对话；
 - 同步冷却 429：吞掉并等下次；
-- AI Search 不可用：`memory_search` 返回空，`memory_get` 仍可用；
+- AI Search 不可用：`memory_search` 返回空并在结果里带 `degraded: true` + `reason`（不伪装成"没有记忆"），`memory_get` 仍可用；`/v1/stats` 的 `health.aiSearch` 做真实探活并带 `searchError`，`/v1/recall` 降级为 recent 兜底时写一条 error 日志；
+- AI Search 实例名与配置不一致：命名空间里只有一个实例时自动改用它（写 warn），否则降级并报出可见实例名；
 - R2 写冲突：单写者，重试一次。
 
 ## 非目标
