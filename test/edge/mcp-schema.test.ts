@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { McpServer } from '@modelcontextprotocol/server'
 import type { MemoryService } from '../../src/contracts'
 import type { Env } from '../../src/env'
-import { buildServer, createSmritiMcpServer, memorySearchPayload, toolSchemas } from '../../src/mcp/server'
+import {
+  buildServer,
+  createSmritiMcpServer,
+  memorySearchPayload,
+  shouldSyncAfterWrite,
+  toolSchemas,
+} from '../../src/mcp/server'
 
 const TOOL_NAMES = [
   'memory_search',
@@ -133,6 +139,16 @@ describe('McpServer 构建', () => {
     const server = buildServer(env)
     expect(server).toBeInstanceOf(McpServer)
     expect(server.toolInputSchemaJson('memory_topics')).toBeDefined()
+  })
+})
+
+describe('写入后的索引同步判定', () => {
+  it('只有真正落盘（applied）才触发同步', () => {
+    expect(shouldSyncAfterWrite({ status: 'applied' })).toBe(true)
+    expect(shouldSyncAfterWrite({ status: 'pending_review' })).toBe(false)
+    expect(shouldSyncAfterWrite({ status: 'unchanged' })).toBe(false)
+    expect(shouldSyncAfterWrite({ status: 'rejected' })).toBe(false)
+    expect(shouldSyncAfterWrite({ status: 'unknown_topic' })).toBe(false)
   })
 })
 

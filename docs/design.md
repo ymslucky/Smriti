@@ -37,7 +37,7 @@ memories/_index/recent.json              # 最近写入索引，用于召回合�
 
 ## 一致性
 
-写成功 = R2 落盘成功；索引状态单独返回。AI Search 同步默认 24 小时，部署时设 `sync_interval=900`（15 分钟），并在每次写入后尽力触发一次同步（30 秒冷却）。索引滞后期间由 `memory_get` 与 `_index/recent.json` 兜底。
+写成功 = R2 落盘成功；索引状态单独返回。AI Search 同步默认 24 小时，部署时设 `sync_interval=900`（15 分钟）。写路径在落盘后**尽力**触发一次 `jobs.create()`：REST 的 `/v1/extract` 与 pending approve 走 `ctx.waitUntil`，MCP 的 `memory_upsert`（`applied`）与 `memory_forget`（命中）同样在 `ctx.waitUntil` 里触发；没有本地冷却，重复触发由 AI Search 侧的 429 自然节流（`sync()` 吞掉 429）。索引滞后期间由 `memory_get` 与 `_index/recent.json` 兜底。
 
 ## 鉴权
 

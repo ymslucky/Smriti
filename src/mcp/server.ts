@@ -18,7 +18,7 @@ import { createAiSearch } from '../search/ai-search'
 import { createMemoryService } from '../service'
 import { createR2Store } from '../storage/r2-store'
 import { TOPIC_NAMES } from '../topics'
-import type { SearchHealth, SearchHit } from '../types'
+import type { SearchHealth, SearchHit, UpsertResult } from '../types'
 
 /** 固定主题词表：未知 topic 在 schema 层就被拒绝。 */
 const topicSchema = z.enum(TOPIC_NAMES)
@@ -105,10 +105,34 @@ export function memorySearchPayload(
 }
 
 /**
+ * 写入成功后是否值得触发一次索引同步。
+ *
+ * 只有真正落盘（`applied`）或删掉（forget 命中）才改变 `memories/active/**` 的内容；
+ * `pending_review` / `unchanged` / `rejected` 不动索引，不必浪费一次 job。
+ */
+export function shouldSyncAfterWrite(result: UpsertResult): boolean {
+  return result.status === 'applied'
+}
+
+/** 由调用方注入的写入后钩子（HTTP 入口里是 `ctx.waitUntil(search.sync())`）。 */
+export interface McpWriteHooks {
+  afterWrite?: () => void
+}
+
+/**
  * 把 MemoryService 注册成 MCP 工具。
  * 不触碰 env / 绑定，因此可以在单测里用假 service 直接构造。
  */
-export function createSmritiMcpServer(service: MemoryService): McpServer {
+export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHooks = {}): McpServer {
+  const afterWrite = (): void => {
+    try {
+      hooks.afterWrite?.()
+    } catch (error) {
+      // 同步只是"尽力而为"，不能因为钩子抛错把写入结果打成失败。
+      console.error('smriti: 写入后触发索引同步失败：', error instanceof Error ? error.message : String(error))
+    }
+  }
+
   const server = new McpServer({ name: 'smriti', version: '0.1.0' })
 
   server.registerTool(
@@ -159,18 +183,18 @@ export function createSmritiMcpServer(service: MemoryService): McpServer {
       inputSchema: toolSchemas.memory_upsert,
     },
     async ({ topic, statement, rationale, confidence, idempotency_key, source }) =>
-      guarded(async () =>
-        textResult(
-          await service.upsert({
-            topic,
-            statement,
-            rationale,
-            confidence,
-            idempotencyKey: idempotency_key,
-            source,
-          }),
-        ),
-      ),
+      guarded(async () => {
+        const result = await service.upsert({
+          topic,
+          statement,
+          rationale,
+          confidence,
+          idempotencyKey: idempotency_key,
+          source,
+        })
+        if (shouldSyncAfterWrite(result)) afterWrite()
+        return textResult(result)
+      }),
   )
 
   server.registerTool(
@@ -195,6 +219,8 @@ export function createSmritiMcpServer(service: MemoryService): McpServer {
     async ({ topic, id, reason }) =>
       guarded(async () => {
         const forgotten = await service.forget(topic, id, reason)
+        // 删除也要让索引尽快收敛，否则被删的条目在检索里还能命中一段时间。
+        if (forgotten) afterWrite()
         return textResult({ status: forgotten ? 'forgotten' : 'not_found', forgotten })
       }),
   )
@@ -202,13 +228,36 @@ export function createSmritiMcpServer(service: MemoryService): McpServer {
   return server
 }
 
-/** 用 Worker 绑定组装 MemoryService，再构造 MCP server（每次请求一个新实例）。 */
-export function buildServer(env: Env): McpServer {
+/**
+ * 用 Worker 绑定组装 MemoryService，再构造 MCP server（每次请求一个新实例）。
+ *
+ * `ctx` 可选：MCP 写路径（`memory_upsert` / `memory_forget`）成功后用它
+ * `waitUntil` 触发一次 AI Search 同步，否则新写入要等数据源的 15 分钟同步窗口
+ * 才能被检索到——这正是冒烟测试里"写得进去、搜不出来"的原因。REST 入口
+ * （`/v1/extract`、approve）在 `http/app.ts` 里有同样的处理。
+ */
+export function buildServer(env: Env, ctx?: ExecutionContext): McpServer {
   const store = createR2Store(env.MEMORY)
   const search = createAiSearch(env.AI_SEARCH, {
     instance: env.AI_SEARCH_INSTANCE ?? 'memory',
   })
-  return createSmritiMcpServer(createMemoryService({ store, search }))
+
+  const hooks: McpWriteHooks = ctx
+    ? {
+        afterWrite: () => {
+          ctx.waitUntil(
+            search.sync().catch((error: unknown) => {
+              console.error(
+                'smriti: MCP 写入后同步 AI Search 失败：',
+                error instanceof Error ? error.message : String(error),
+              )
+            }),
+          )
+        },
+      }
+    : {}
+
+  return createSmritiMcpServer(createMemoryService({ store, search }), hooks)
 }
 
 /** 把一个 hostname 或 URL 规范成 hostname；非法值返回 undefined。 */
@@ -250,7 +299,7 @@ export function createMcpFetchHandler(
 ): (request: Request, env: Env, ctx: ExecutionContext) => Promise<Response> {
   return (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
     const hosts = allowedMCPHosts(request, getEnv())
-    const handler = createMcpHandler(() => buildServer(getEnv()), {
+    const handler = createMcpHandler(() => buildServer(getEnv(), ctx), {
       allowedOriginHostnames: hosts,
     })
     return handler(request, env, ctx)
