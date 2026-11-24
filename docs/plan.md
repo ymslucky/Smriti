@@ -4,7 +4,7 @@
 
 ## 背景
 
-- 单用户自用；只存精炼偏好；冲突由人工裁决；固定主题词表；历史保留 30 天；自动捕获默认开启。
+- 单用户自用；只存精炼偏好；槽位冲突由人工裁决；主题由写入方命名（点分层级，无固定词表）；历史保留 30 天；自动捕获默认开启。
 - 存储：R2 为真源，AI Search（R2 数据源）提供混合检索，Vectorize 由 AI Search 托管。
 - 身份：Cloudflare Access（邮箱 OTP），agent 用 Access service token。
 - 仓库：`Smriti`（Worker 网关）、`Smriti-DSH`（dsh 插件）。
@@ -38,7 +38,7 @@
 - R2 路径：`memories/active/{topic}/{id}.md`、`memories/_pending/{changeId}.json`、`memories/_history/{topic}/{id}.md`、`memories/_journal/{yyyy}/{mm}/{dd}/{eventId}.json`。
 - 正文 Markdown：`# {statement}` + 可选 `## 理由` + rationale。
 - R2 自定义元数据：`topic`、`updated_at`（epoch 毫秒数字字符串，读取兼容旧 ISO）、`version`（数字字符串）。
-- 主题词表固定 12 个，见 `src/topics.ts`；未知 topic 拒绝。
+- 主题 id 语法固定（小写 slug，点分最多 3 段），没有词表白名单；写入新 id 即创建主题。
 
 ## 对外 API
 

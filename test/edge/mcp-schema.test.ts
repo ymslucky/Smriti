@@ -49,13 +49,20 @@ function fakeBucket() {
 const env: Env = { MEMORY: fakeBucket(), AUTH_MODE: 'dev' }
 
 describe('MCP 工具 schema', () => {
-  it('memory_search 只接受固定 topic 且限制 limit 范围', () => {
+  it('memory_search 的 topic 只做语法校验，不限词表', () => {
     expect(toolSchemas.memory_search.safeParse({ query: '缩进' }).success).toBe(true)
     expect(
       toolSchemas.memory_search.safeParse({ query: '缩进', topic: 'code.style', limit: 5 }).success,
     ).toBe(true)
+    // 自由主题（尚未写入过）也应接受；这是"AI 管主题"的前提。
+    expect(toolSchemas.memory_search.safeParse({ query: 'x', topic: 'identity.role' }).success).toBe(
+      true,
+    )
     expect(toolSchemas.memory_search.safeParse({ query: '' }).success).toBe(false)
-    expect(toolSchemas.memory_search.safeParse({ query: 'x', topic: 'made.up' }).success).toBe(false)
+    expect(toolSchemas.memory_search.safeParse({ query: 'x', topic: 'Bad Topic' }).success).toBe(
+      false,
+    )
+    expect(toolSchemas.memory_search.safeParse({ query: 'x', topic: 'a.b.c.d' }).success).toBe(false)
     expect(toolSchemas.memory_search.safeParse({ query: 'x', limit: 0 }).success).toBe(false)
     expect(toolSchemas.memory_search.safeParse({ query: 'x', limit: 51 }).success).toBe(false)
   })
@@ -63,7 +70,7 @@ describe('MCP 工具 schema', () => {
   it('memory_get / memory_forget 要求 topic 与 id/reason', () => {
     expect(toolSchemas.memory_get.safeParse({ topic: 'code.style', id: 'mem_1' }).success).toBe(true)
     expect(toolSchemas.memory_get.safeParse({ topic: 'code.style' }).success).toBe(false)
-    expect(toolSchemas.memory_get.safeParse({ topic: 'nope', id: 'mem_1' }).success).toBe(false)
+    expect(toolSchemas.memory_get.safeParse({ topic: 'Bad Topic', id: 'mem_1' }).success).toBe(false)
 
     expect(
       toolSchemas.memory_forget.safeParse({
@@ -82,6 +89,14 @@ describe('MCP 工具 schema', () => {
       toolSchemas.memory_upsert.safeParse({
         topic: 'workflow.git',
         statement: '用 rebase 保持线性历史',
+      }).success,
+    ).toBe(true)
+    // 自由主题 + 展示名：主题由 AI 管理，schema 不做词表枚举。
+    expect(
+      toolSchemas.memory_upsert.safeParse({
+        topic: 'identity.role',
+        topic_label: '角色',
+        statement: '用户是软件开发工程师',
       }).success,
     ).toBe(true)
     expect(
@@ -149,7 +164,7 @@ describe('写入后的索引同步判定', () => {
     expect(shouldSyncAfterWrite({ status: 'pending_review' })).toBe(false)
     expect(shouldSyncAfterWrite({ status: 'unchanged' })).toBe(false)
     expect(shouldSyncAfterWrite({ status: 'rejected' })).toBe(false)
-    expect(shouldSyncAfterWrite({ status: 'unknown_topic' })).toBe(false)
+    expect(shouldSyncAfterWrite({ status: 'invalid_topic' })).toBe(false)
   })
 })
 

@@ -5,20 +5,31 @@
  * 单元测试用内存 fake 即可覆盖全部状态机。本文件不直接访问 R2 / 网络。
  *
  * 写入判定顺序（与 docs/design.md 一致）：
- * 1. topic 不在固定词表 → `unknown_topic`；
+ * 1. topic 不符合 slug 语法 → `invalid_topic`（**不**比对词表：主题由写入时创建）；
  * 2. 归一化后为空 → `rejected`；
  * 3. pending 中已有相同 idempotencyKey → 原样返回该 change；
  * 4. 同 topic 已有相同陈述（哈希相同）→ `unchanged`；
- * 5. 同 topic 已有不同陈述 → `conflict` pending；
- * 6. 其它 topic 已有归一化后完全相同的 active（本地兜底，不依赖检索索引新鲜度）
- *    → `possible-duplicate` pending；
- * 7. 跨 topic 检索到高分近似 → `possible-duplicate` pending；
- * 8. 以上都不满足才落盘 active，返回 `applied`。
+ * 5. 父 / 子主题已有相同陈述（同一棵主题子树内）→ `unchanged`；
+ * 6. topic 还没有子主题（= 叶子 / 槽位）且已有不同陈述 → `conflict` pending；
+ *    已有子主题（= 分类）的 topic 可以容纳多条；
+ * 7. 其它 topic 已有归一化后完全相同的 active → `possible-duplicate` pending；
+ * 8. 跨 topic 检索到高分近似 → `possible-duplicate` pending；
+ * 9. 以上都不满足才落盘 active，返回 `applied`。
+ *
+ * 叶子 / 分类是**数据推导**的：某个 topic 一旦被写成 `a.b`，`a` 自动成为分类。
  */
 
 import type { MemoryService, MemoryStore, SearchIndex, UpsertInput } from './contracts'
 import { createRecall } from './recall'
-import { TOPICS, TOPIC_NAMES, isKnownTopic } from './topics'
+import {
+  MAX_TOPIC_SEGMENTS,
+  descriptionForTopic,
+  isValidTopicId,
+  isWithinTopic,
+  labelForTopic,
+  parentOf,
+  topicDepth,
+} from './topics'
 import type {
   ExtractCandidate,
   MemoryRecord,
@@ -147,19 +158,27 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   }
 
   /**
-   * 本地近重复兜底：AI Search 索引是异步同步的，刚写入的记录可能还查不到，
-   * 这里直接扫描 active 做归一化精确比对。同 topic 的相同陈述已由 `unchanged`
-   * 分支处理，因此只返回其它 topic 的记录。
+   * 主题树内的重复检查：父 / 子主题之间不应出现同一条陈述。
+   * 同 topic 的相同陈述已在 `unchanged` 分支处理，这里只看父 / 子主题。
    */
-  async function findLocalDuplicate(
+  function findRelatedStatement(
+    all: readonly MemoryRecord[],
     statement: string,
     topic: string,
-  ): Promise<MemoryRecord | undefined> {
+  ): MemoryRecord | undefined {
     const normalized = normalizeStatement(statement)
-    const all = await store.listActive()
     return all.find(
       (record) =>
-        record.topic !== topic && normalizeStatement(record.statement) === normalized,
+        record.topic !== topic &&
+        (isWithinTopic(record.topic, topic) || isWithinTopic(topic, record.topic)) &&
+        normalizeStatement(record.statement) === normalized,
+    )
+  }
+
+  /** 数据里是否存在以 `topic.` 开头的主题；有子主题的 topic 是分类，不是槽位。 */
+  function hasChildTopics(all: readonly MemoryRecord[], topic: string): boolean {
+    return all.some(
+      (record) => record.topic !== topic && record.topic.startsWith(`${topic}.`),
     )
   }
 
@@ -186,12 +205,17 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
 
   async function upsert(input: UpsertInput): Promise<UpsertResult> {
     const topic = typeof input.topic === 'string' ? input.topic.trim() : ''
-    if (!isKnownTopic(topic)) {
+    if (!isValidTopicId(topic)) {
       return {
-        status: 'unknown_topic',
-        message: `未知 topic「${String(input.topic)}」。可用 topic：${TOPIC_NAMES.join(', ')}`,
+        status: 'invalid_topic',
+        message:
+          `topic「${String(input.topic)}」不符合语法：小写字母 / 数字 / 连字符，点分最多 ${MAX_TOPIC_SEGMENTS} 段；` +
+          '例如 identity.role、project.smriti.stack。主题会在首次写入时自动创建。',
       }
     }
+
+    const rawLabel = typeof input.topicLabel === 'string' ? input.topicLabel.trim() : ''
+    const topicLabel = rawLabel === '' ? undefined : rawLabel.slice(0, 80)
 
     const statement = normalizeStatement(
       typeof input.statement === 'string' ? input.statement : '',
@@ -213,7 +237,9 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       }
     }
 
-    const active = await store.listActive(topic)
+    // 一次全量读取同时支撑「同主题去重 / 父子去重 / 叶子判定 / 跨主题精确兜底」。
+    const all = await store.listActive()
+    const active = all.filter((record) => record.topic === topic)
     const hash = statementHash(statement)
     const same = active.find(
       (record) => statementHash(normalizeStatement(record.statement)) === hash,
@@ -222,16 +248,29 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       return { status: 'unchanged', memory: same, message: '同 topic 已有相同陈述' }
     }
 
+    // 主题树内（父 / 子主题）已有同一条陈述时视为已记住，避免同一偏好在不同粒度重复落库。
+    const related = findRelatedStatement(all, statement, topic)
+    if (related) {
+      return {
+        status: 'unchanged',
+        memory: related,
+        message: `主题 ${related.topic} 已有相同陈述`,
+      }
+    }
+
     const at = now().toISOString()
     const proposed: PendingChange['proposed'] = {
       statement,
       ...(input.rationale !== undefined ? { rationale: input.rationale } : {}),
       confidence: input.confidence ?? DEFAULT_CONFIDENCE,
       ...(input.source !== undefined ? { source: input.source } : {}),
+      ...(topicLabel !== undefined ? { topicLabel } : {}),
     }
 
     const current = pickLatest(active)
-    if (current) {
+    // 没有子主题的 topic 是槽位：已有不同陈述时进待裁决；
+    // 一旦有子主题（例如写过 code.style.indent），code.style 变成分类，可容纳多条。
+    if (current && !hasChildTopics(all, topic)) {
       const change = await createPendingChange(
         'conflict',
         topic,
@@ -250,7 +289,10 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     }
 
     // 本地兜底先于 AI Search：索引可能滞后，归一化精确比对更确定，也省一次检索调用。
-    const localDuplicate = await findLocalDuplicate(statement, topic)
+    const localDuplicate = all.find(
+      (record) =>
+        record.topic !== topic && normalizeStatement(record.statement) === statement,
+    )
     if (localDuplicate) {
       const change = await createPendingChange(
         'possible-duplicate',
@@ -291,6 +333,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     const record: MemoryRecord = {
       id: nextRecordId(),
       topic,
+      ...(topicLabel !== undefined ? { topicLabel } : {}),
       statement,
       ...(input.rationale !== undefined ? { rationale: input.rationale } : {}),
       confidence: proposed.confidence,
@@ -316,7 +359,9 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   }
 
   async function list(topic?: string): Promise<MemoryRecord[]> {
-    return store.listActive(topic)
+    const all = await store.listActive()
+    if (topic === undefined) return all
+    return all.filter((record) => isWithinTopic(record.topic, topic))
   }
 
   async function search(
@@ -327,9 +372,17 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     if (!Number.isFinite(limit) || limit <= 0) return []
     const max = Math.trunc(limit)
     const topic = options?.topic
-    return topic
-      ? searchIndex.search(query, { limit: max, topic })
-      : searchIndex.search(query, { limit: max })
+    if (topic === undefined) return searchIndex.search(query, { limit: max })
+
+    // 有子主题的 topic 是分类：索引的 filter 只能精确匹配，先在内存里按子树过滤。
+    const all = await store.listActive()
+    const isCollection = all.some(
+      (record) => record.topic !== topic && record.topic.startsWith(`${topic}.`),
+    )
+    if (!isCollection) return searchIndex.search(query, { limit: max, topic })
+    const expanded = Math.min(200, Math.max(max * 5, max + 10))
+    const hits = await searchIndex.search(query, { limit: expanded })
+    return hits.filter((hit) => isWithinTopic(hit.topic, topic)).slice(0, max)
   }
 
   async function forget(topic: string, id: string, reason: string): Promise<boolean> {
@@ -348,16 +401,45 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
 
   async function topics(): Promise<TopicSummary[]> {
     const all = await store.listActive()
-    const counts = new Map<string, number>()
+    const direct = new Map<string, { count: number; label?: string; labelAt: string }>()
     for (const record of all) {
-      counts.set(record.topic, (counts.get(record.topic) ?? 0) + 1)
+      const entry = direct.get(record.topic) ?? { count: 0, labelAt: '' }
+      entry.count += 1
+      // 同一主题的展示名以最近一次带 label 的写入为准。
+      if (record.topicLabel !== undefined && record.updatedAt >= entry.labelAt) {
+        entry.label = record.topicLabel
+        entry.labelAt = record.updatedAt
+      }
+      direct.set(record.topic, entry)
     }
-    return TOPICS.map((definition) => ({
-      topic: definition.topic,
-      label: definition.label,
-      description: definition.description,
-      count: counts.get(definition.topic) ?? 0,
-    }))
+
+    const summaries: TopicSummary[] = []
+    for (const [topic, entry] of direct) {
+      let count = 0
+      for (const [other, otherEntry] of direct) {
+        if (isWithinTopic(other, topic)) count += otherEntry.count
+      }
+      // 父主题取数据里**实际存在**的最近祖先；中间层没写过时直接挂到更上层。
+      let parent: string | null = null
+      let cursor = parentOf(topic)
+      while (cursor !== undefined) {
+        if (direct.has(cursor)) {
+          parent = cursor
+          break
+        }
+        cursor = parentOf(cursor)
+      }
+      summaries.push({
+        topic,
+        label: entry.label ?? labelForTopic(topic),
+        description: descriptionForTopic(topic),
+        parent,
+        depth: topicDepth(topic),
+        count,
+        directCount: entry.count,
+      })
+    }
+    return summaries.sort((left, right) => left.topic.localeCompare(right.topic))
   }
 
   const recall = createRecall({ store, search: searchIndex })
@@ -396,6 +478,9 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     const record: MemoryRecord = successor ?? {
       id: nextRecordId(),
       topic: change.topic,
+      ...(change.proposed.topicLabel !== undefined
+        ? { topicLabel: change.proposed.topicLabel }
+        : {}),
       statement: change.proposed.statement,
       ...(change.proposed.rationale !== undefined
         ? { rationale: change.proposed.rationale }
@@ -453,6 +538,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       results.push(
         await upsert({
           topic: candidate.topic,
+          ...(candidate.topicLabel !== undefined ? { topicLabel: candidate.topicLabel } : {}),
           statement: candidate.statement,
           ...(candidate.rationale !== undefined ? { rationale: candidate.rationale } : {}),
           ...(candidate.confidence !== undefined ? { confidence: candidate.confidence } : {}),

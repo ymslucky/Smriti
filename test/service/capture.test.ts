@@ -27,7 +27,7 @@ describe('extractCandidates 中文句式', () => {
   it('「我习惯…」→ 中等置信度 + 测试 topic', () => {
     expect(extractCandidates('我习惯用 vitest 写测试。')).toEqual([
       {
-        topic: 'code.testing',
+        topic: 'code.testing.framework',
         statement: '我习惯用 vitest 写测试',
         confidence: MEDIUM_CONFIDENCE,
       },
@@ -37,7 +37,7 @@ describe('extractCandidates 中文句式', () => {
   it('「统一用…」→ 强置信度 + 编辑器 topic', () => {
     expect(extractCandidates('统一用 vscode 作为编辑器。')).toEqual([
       {
-        topic: 'tooling.editor',
+        topic: 'tooling.editor.editor',
         statement: '统一用 vscode 作为编辑器',
         confidence: STRONG_CONFIDENCE,
       },
@@ -57,7 +57,7 @@ describe('extractCandidates 中文句式', () => {
   it('关键词映射到 Git 流程', () => {
     expect(extractCandidates('统一用 git rebase。')).toEqual([
       {
-        topic: 'workflow.git',
+        topic: 'workflow.git.merge',
         statement: '统一用 git rebase',
         confidence: STRONG_CONFIDENCE,
       },
@@ -79,7 +79,7 @@ describe('extractCandidates 英文句式', () => {
   it('always → 强置信度', () => {
     expect(extractCandidates('Always use vitest for tests!')).toEqual([
       {
-        topic: 'code.testing',
+        topic: 'code.testing.framework',
         statement: 'Always use vitest for tests',
         confidence: STRONG_CONFIDENCE,
       },
@@ -133,7 +133,7 @@ describe('extractCandidates 弱化词与置信度', () => {
   it('去掉「可能」且保留习惯句式的中间置信度', () => {
     expect(extractCandidates('我可能更喜欢 cursor。')).toEqual([
       {
-        topic: 'tooling.editor',
+        topic: 'tooling.editor.editor',
         statement: '我更喜欢 cursor',
         confidence: MEDIUM_CONFIDENCE,
       },
@@ -192,7 +192,7 @@ describe('extractCandidates 边界', () => {
     const candidates = extractCandidates('以后都用 pnpm。统一用 vitest。')
     expect(candidates.map((item) => item.topic)).toEqual([
       'tooling.package-manager',
-      'code.testing',
+      'code.testing.framework',
     ])
   })
 

@@ -273,15 +273,29 @@ describe('/v1 REST', () => {
     expect(body.candidates).toHaveLength(1)
   })
 
-  it('POST /v1/extract 拒绝未知 topic', async () => {
+  it('POST /v1/extract 拒绝语法不合法的 topic', async () => {
     const response = await handle(
       jsonRequest('/v1/extract', 'POST', {
-        candidates: [{ topic: 'made.up', statement: 'x', confidence: 0.5 }],
+        candidates: [{ topic: 'Bad Topic', statement: 'x', confidence: 0.5 }],
       }),
       devEnv(),
       ctx,
     )
     expect(response.status).toBe(400)
+  })
+
+  it('POST /v1/extract 接受尚未写入过的自由 topic', async () => {
+    const response = await handle(
+      jsonRequest('/v1/extract', 'POST', {
+        candidates: [{ topic: 'identity.role', statement: '用户是工程师', confidence: 0.8 }],
+      }),
+      devEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(200)
+    expect(fake.service.extract).toHaveBeenCalledWith([
+      { topic: 'identity.role', statement: '用户是工程师', confidence: 0.8 },
+    ])
   })
 
   it('POST /v1/extract 缺少 messages/candidates 返回 400', async () => {
@@ -840,9 +854,9 @@ describe('GET /v1/memories', () => {
     expect(fake.service.list).toHaveBeenCalledWith(undefined)
   })
 
-  it('未知 topic 返回 400 且不读存储', async () => {
+  it('topic 语法不合法返回 400 且不读存储', async () => {
     const response = await handle(
-      new Request('https://smriti.example.com/v1/memories?topic=made.up'),
+      new Request('https://smriti.example.com/v1/memories?topic=Bad%20Topic'),
       devEnv(),
       ctx,
     )

@@ -1002,6 +1002,16 @@ main:focus {
   color: var(--ink);
 }
 
+/* 细分主题行：只靠缩进与字重区分层级，不加图标或颜色块。 */
+.shelf__row--child .shelf__name {
+  padding-left: 18px;
+}
+
+.shelf__row--child .shelf__label {
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
 .meter {
   appearance: none;
   -webkit-appearance: none;

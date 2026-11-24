@@ -28,6 +28,7 @@
     topics: [],
     byTopic: [],
     topicLabels: new Map(),
+    topicParents: new Map(),
     memories: [],
     memoriesLoaded: false,
     pending: [],
@@ -173,7 +174,31 @@
   function labelFor(topic) {
     var key = text(topic);
     if (!key) return '—';
+    var path = [];
+    var cursor = key;
+    for (var depth = 0; depth < 4 && cursor; depth += 1) {
+      var label = state.topicLabels.get(cursor);
+      if (!label) break;
+      path.unshift(label);
+      cursor = state.topicParents.get(cursor) || '';
+    }
+    if (path.length) return path.join(' · ');
     return state.topicLabels.get(key) || key;
+  }
+
+  /** 登记一个主题的标签与父主题；统计接口与词表接口都会调用。 */
+  function rememberTopic(item) {
+    if (!item || !item.topic) return;
+    if (item.label) state.topicLabels.set(item.topic, item.label);
+    state.topicParents.set(item.topic, item.parent || null);
+  }
+
+  /** 主题是否落在 scope 子树内；scope 为空表示不过滤。 */
+  function isWithinTopic(topic, scope) {
+    var value = text(topic);
+    var root = text(scope);
+    if (!root) return true;
+    return value === root || value.indexOf(root + '.') === 0;
   }
 
   /* ---------------------------------------------------------------- fetch */
@@ -389,11 +414,7 @@
         state.byTopic = Array.isArray(payload.byTopic) ? payload.byTopic : [];
 
         /* 先登记标签，再渲染：否则最近更新会先拿到原始 topic 标识。 */
-        state.byTopic.forEach(function (item) {
-          if (item && item.topic && item.label && !state.topicLabels.has(item.topic)) {
-            state.topicLabels.set(item.topic, item.label);
-          }
-        });
+        state.byTopic.forEach(rememberTopic);
 
         renderTotals(totals, health);
         renderRecent(recent);
@@ -571,11 +592,7 @@
       function (data) {
         var list = data && Array.isArray(data.topics) ? data.topics : [];
         state.topics = list;
-        list.forEach(function (item) {
-          if (item && item.topic && item.label) {
-            state.topicLabels.set(item.topic, item.label);
-          }
-        });
+        list.forEach(rememberTopic);
         renderTopics(list);
         renderTopicFilter(list);
         setBusy(dom.topicList, false);
@@ -597,30 +614,54 @@
       dom.topicList.hidden = true;
       dom.topicsMeta.textContent = '没有主题';
       showState(dom.topicState, {
-        title: '主题词表是空的',
-        body: '12 个固定主题来自 src/topics.ts。若 /v1/topics 返回空数组，说明这次部署的词表没有加载。'
+        title: '还没有主题',
+        body: '主题由 AI 在写入时创建：memory_upsert 首次使用的 topic 会自动成为主题，点分表示层级。'
       });
       return;
     }
     dom.topicList.hidden = false;
     hideState(dom.topicState);
 
+    var roots = list.filter(function (item) {
+      return item && !item.parent;
+    });
+    var children = list.filter(function (item) {
+      return item && item.parent;
+    });
+    var ordered = [];
+    roots.forEach(function (root) {
+      ordered.push({ item: root, isChild: false });
+      children.forEach(function (child) {
+        if (child.parent === root.topic) ordered.push({ item: child, isChild: true });
+      });
+    });
+    /* 父项缺失的细分主题兜底追加，避免词表局部损坏时整行消失。 */
+    children.forEach(function (child) {
+      var hasParent = roots.some(function (root) {
+        return root.topic === child.parent;
+      });
+      if (!hasParent) ordered.push({ item: child, isChild: true });
+    });
+
     var total = 0;
     var max = 1;
-    list.forEach(function (item) {
-      var count = Number(item && item.count) || 0;
-      total += count;
+    ordered.forEach(function (entry) {
+      var item = entry.item;
+      var own = Number(item.directCount != null ? item.directCount : item.count) || 0;
+      var count = Number(item.count) || 0;
+      total += own;
       if (count > max) max = count;
     });
     dom.topicsMeta.textContent =
-      list.length + ' 个固定主题 · 共 ' + formatCount(total) + ' 条记忆';
+      list.length + ' 个主题 · 共 ' + formatCount(total) + ' 条记忆';
 
     var fragment = document.createDocumentFragment();
-    list.forEach(function (item) {
+    ordered.forEach(function (entry) {
+      var item = entry.item;
       var count = Number(item && item.count) || 0;
       var label = text(item.label) || text(item.topic);
       fragment.appendChild(
-        el('li', { class: 'shelf__row' }, [
+        el('li', { class: 'shelf__row' + (entry.isChild ? ' shelf__row--child' : '') }, [
           el('span', { class: 'shelf__name' }, [
             el('span', { class: 'shelf__label', text: label }),
             el('span', { class: 'shelf__id', text: text(item.topic) })
@@ -649,15 +690,46 @@
 
   function renderTopicFilter(list) {
     var current = dom.topicFilter.value;
+    var roots = list.filter(function (item) {
+      return item && !item.parent;
+    });
+    var children = list.filter(function (item) {
+      return item && item.parent;
+    });
     dom.topicFilter.replaceChildren(
       el('option', { value: '', text: '全部主题' })
     );
-    list.forEach(function (item) {
+    roots.forEach(function (root) {
+      var group = document.createElement('optgroup');
+      group.label = text(root.label) || text(root.topic);
       /* 只放标签，不放计数：检索模式下计数会与命中数混淆，计数归「主题」区块。 */
+      group.appendChild(
+        el('option', {
+          value: text(root.topic),
+          text: text(root.label) || text(root.topic)
+        })
+      );
+      children.forEach(function (child) {
+        if (child.parent !== root.topic) return;
+        group.appendChild(
+          el('option', {
+            value: text(child.topic),
+            text: text(child.label) || text(child.topic)
+          })
+        );
+      });
+      dom.topicFilter.appendChild(group);
+    });
+    /* 父主题不在返回列表里（父层没有记录）的细分主题，退化为平级选项，保证可筛选。 */
+    children.forEach(function (child) {
+      var known = roots.some(function (root) {
+        return root.topic === child.parent;
+      });
+      if (known) return;
       dom.topicFilter.appendChild(
         el('option', {
-          value: text(item.topic),
-          text: text(item.label) || text(item.topic)
+          value: text(child.topic),
+          text: text(child.label) || text(child.topic)
         })
       );
     });
@@ -718,9 +790,14 @@
 
   function visibleRows() {
     var rows = state.view === 'search' ? state.hits : state.memories;
-    if (!state.topic) return rows;
-    return rows.filter(function (item) {
-      return item && item.topic === state.topic;
+    var filtered = rows.filter(function (item) {
+      return item && isWithinTopic(item.topic, state.topic);
+    });
+    // 列表按更新时间倒序；检索结果没有时间戳，保持相关度顺序。
+    return filtered.slice().sort(function (left, right) {
+      var a = toDate(left.updatedAt);
+      var b = toDate(right.updatedAt);
+      return (b ? b.getTime() : 0) - (a ? a.getTime() : 0);
     });
   }
 

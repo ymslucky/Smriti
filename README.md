@@ -2,13 +2,13 @@
 
 > 给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search 做检索，MCP 暴露读写工具。
 
-状态：M0–M4 完成，已部署（`typecheck` + 210 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
+状态：M0–M4 完成，已部署（`typecheck` + 244 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
 
 ## 它做什么
 
 - 模型通过 MCP 工具 `memory_search` / `memory_get` / `memory_topics` / `memory_upsert` / `memory_list` / `memory_forget` 读写偏好；
-- 只存精炼偏好，主题限定为 12 个固定值；
-- 同主题的新陈述不直接覆盖，进 `_pending` 等人工裁决；
+- 只存精炼偏好，**主题由 AI 在写入时创建**：小写 slug、点分最多 3 段（如 `identity.role`），没有固定词表；
+- 有子主题的 topic 是分类（可容纳多条）；没有子主题的 topic 是槽位，新陈述不直接覆盖，进 `_pending` 等人工裁决；
 - 新偏好直接生效；删除是软删除，旧版本保留 30 天；
 - 人用 `/memory review` 批准或拒绝冲突。
 
@@ -26,7 +26,7 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 
 ## WebUI
 
-`/ui` 是一个只读仪表盘（Operate 模式）：概览统计、最近更新、记忆表格与主题筛选、语义/本地检索、待裁决的旧→新对比、12 个固定主题计数。没有写入、审批、删除按钮——裁决仍在 dsh 里用 `/memory` 命令完成。
+`/ui` 是一个只读仪表盘（Operate 模式）：概览统计、最近更新、记忆表格与主题筛选、语义/本地检索、待裁决的旧→新对比、由数据推导的主题树计数。没有写入、审批、删除按钮——裁决仍在 dsh 里用 `/memory` 命令完成。
 
 - 资源：`public/ui/{index.html,styles.css,app.js}`，零依赖、无构建步骤。
 - 设计：`PRODUCT.md`、`DESIGN.md`、`docs/ui.md`（令牌、状态矩阵、对比度与验证记录）。
@@ -42,6 +42,7 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 | POST | `/v1/recall` | 插件召回 |
 | POST | `/v1/extract` | 自动捕获候选 |
 | GET | `/v1/pending` | 待裁决列表 |
+| GET | `/v1/topics` | 由写入记录推导的主题树（含子树计数与展示名） |
 | POST | `/v1/pending/:id/approve` | 批准 |
 | POST | `/v1/pending/:id/reject` | 拒绝 |
 | GET | `/v1/stats` | WebUI 概览聚合（只读） |
@@ -92,7 +93,7 @@ src/
   recall.ts         召回合并与水合
   search/           AI Search 适配
   storage/          R2 存储层
-  topics.ts         固定主题词表
+  topics.ts         主题 id 语法 + 种子提示（展示名 / 关键词）
 public/ui/          WebUI 静态资源
 test/
 ```

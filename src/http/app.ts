@@ -20,7 +20,7 @@ import { createMcpFetchHandler } from '../mcp/server'
 import { createAiSearch } from '../search/ai-search'
 import { createMemoryService } from '../service'
 import { createR2Store } from '../storage/r2-store'
-import { isKnownTopic } from '../topics'
+import { MAX_TOPIC_SEGMENTS, isValidTopicId } from '../topics'
 import type { ExtractCandidate, MemorySource } from '../types'
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
@@ -147,8 +147,12 @@ function parseCandidate(value: unknown, index: number): ExtractCandidate {
   }
   const item = value as Record<string, unknown>
 
-  if (typeof item.topic !== 'string' || !isKnownTopic(item.topic)) {
-    throw new HttpError(400, 'invalid_request', `${path}.topic must be one of the fixed topics`)
+  if (typeof item.topic !== 'string' || !isValidTopicId(item.topic)) {
+    throw new HttpError(
+      400,
+      'invalid_request',
+      `${path}.topic must be a lowercase slug (letters / digits / hyphens, max ${MAX_TOPIC_SEGMENTS} dot-separated segments)`,
+    )
   }
   if (typeof item.statement !== 'string' || item.statement.trim() === '') {
     throw new HttpError(400, 'invalid_request', `${path}.statement must be a non-empty string`)
@@ -507,9 +511,15 @@ export async function handle(
         totals: {
           memories: memories.length,
           pending: pending.length,
-          topics: topics.length,
+          // 「已用主题」：直接被写入过记录的主题数（父主题不因子树有记录而重复计数）。
+          topics: topics.filter((topic) => (topic.directCount ?? topic.count) > 0).length,
         },
-        byTopic: topics.map(({ topic, label, count }) => ({ topic, label, count })),
+        byTopic: topics.map(({ topic, label, count, parent }) => ({
+          topic,
+          label,
+          count,
+          parent,
+        })),
         recent,
         health: {
           aiSearch: searchHealth ? searchHealth.ok : env.AI_SEARCH !== undefined,
@@ -525,8 +535,12 @@ export async function handle(
     // WebUI 记忆表格：topic 可选，limit 默认 200、上限 500。
     if (method === 'GET' && pathname === '/v1/memories') {
       const topic = url.searchParams.get('topic')?.trim() ?? ''
-      if (topic !== '' && !isKnownTopic(topic)) {
-        throw new HttpError(400, 'invalid_request', 'topic must be one of the fixed topics')
+      if (topic !== '' && !isValidTopicId(topic)) {
+        throw new HttpError(
+          400,
+          'invalid_request',
+          'topic must be a lowercase slug (letters / digits / hyphens, max 3 dot-separated segments)',
+        )
       }
       const limit = parseQueryLimit(
         url.searchParams.get('limit'),

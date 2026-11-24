@@ -141,6 +141,10 @@ export function parseBody(
   const source = parseSource(metadata.source)
   if (source !== undefined) record.source = source
 
+  if (isNonEmptyString(metadata.topic_label)) {
+    record.topicLabel = metadata.topic_label
+  }
+
   if ('supersedes' in metadata) {
     record.supersedes = metadata.supersedes === '' ? null : metadata.supersedes
   }
@@ -161,6 +165,10 @@ export function serializeMetadata(record: MemoryRecord): Record<string, string> 
   }
   if (record.source !== undefined) {
     metadata.source = JSON.stringify(record.source)
+  }
+  // 主题展示名由写入方给出；截断到 80 字符，避免超出 R2 customMetadata 限制。
+  if (typeof record.topicLabel === 'string' && record.topicLabel.trim() !== '') {
+    metadata.topic_label = record.topicLabel.trim().slice(0, 80)
   }
   // 用空字符串区分「显式 null」与「字段缺失」，保证 round-trip。
   if (record.supersedes !== undefined) {

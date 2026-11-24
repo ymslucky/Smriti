@@ -6,12 +6,13 @@
  * 2. 句子里必须出现表 1 的偏好句式（「我习惯…」「以后都用…」「统一用…」「不要再…」，
  *    以及 prefer / always / never / by default / use X instead 等），按句式强度给 0.6–0.9；
  * 3. 用 `topics.ts` 的 keywords 映射固定词表中的 topic，匹配不到则丢弃；
+ *    同一根主题下命中分数相同时取更深（更细）的细分主题，不同根主题之间按词表顺序取先者；
  * 4. 去掉「我觉得 / 感觉 / 可能 / maybe」等弱化词，截断到 200 字符，同样候选去重。
  *
  * 输出直接喂给 `MemoryService.extract()`，写入仍由 service 做幂等与冲突判定。
  */
 
-import { TOPICS } from './topics'
+import { TOPIC_HINTS, rootOf, topicDepth } from './topics'
 import type { ExtractCandidate, MemorySource } from './types'
 
 /** 候选陈述的最大字符数（按 code point 计）。 */
@@ -121,20 +122,30 @@ function countKeyword(haystack: string, keyword: string): number {
   return count
 }
 
-/** 用固定词表的 keywords 选出最匹配的 topic；同分时取 TOPICS 中靠前者。 */
+/** 用固定词表的 keywords 选出最匹配的 topic；同根主题同分时取更细的细分主题。 */
 function matchTopic(sentence: string): string | undefined {
   const haystack = sentence.toLowerCase()
   let bestTopic: string | undefined
   let bestScore = 0
-  for (const definition of TOPICS) {
+  let bestDepth = -1
+  let bestRoot: string | undefined
+  for (const definition of TOPIC_HINTS) {
     let score = 0
     for (const keyword of definition.keywords) {
       score += countKeyword(haystack, keyword)
     }
-    if (score > bestScore) {
-      bestScore = score
-      bestTopic = definition.topic
-    }
+    if (score <= 0) continue
+    const depth = topicDepth(definition.topic)
+    const root = rootOf(definition.topic)
+    const better =
+      bestTopic === undefined ||
+      score > bestScore ||
+      (score === bestScore && root === bestRoot && depth > bestDepth)
+    if (!better) continue
+    bestTopic = definition.topic
+    bestScore = score
+    bestDepth = depth
+    bestRoot = root
   }
   return bestTopic
 }

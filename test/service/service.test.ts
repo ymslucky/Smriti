@@ -15,7 +15,6 @@ import {
   normalizeStatement,
   statementHash,
 } from '../../src/service'
-import { TOPIC_NAMES } from '../../src/topics'
 import type {
   JournalEvent,
   MemoryRecord,
@@ -242,17 +241,30 @@ describe('MemoryService.upsert', () => {
     expect(body).not.toContain('## 理由')
   })
 
-  it('未知 topic 返回 unknown_topic 且不写任何东西', async () => {
+  it('topic 语法不合法返回 invalid_topic 且不写任何东西', async () => {
     const { store, service } = harness()
 
-    const result = await service.upsert({ topic: 'tooling.unknown', statement: '统一用 pnpm' })
+    const result = await service.upsert({ topic: 'Bad Topic', statement: '统一用 pnpm' })
 
-    expect(result.status).toBe('unknown_topic')
-    expect(result.message).toContain('可用 topic')
-    for (const name of TOPIC_NAMES) expect(result.message).toContain(name)
+    expect(result.status).toBe('invalid_topic')
+    expect(result.message).toContain('topic')
     expect(store.active.size).toBe(0)
     expect(store.pendingChanges.size).toBe(0)
     expect(store.journal).toHaveLength(0)
+  })
+
+  it('自由主题首次写入即创建，并保存 topicLabel', async () => {
+    const { store, service } = harness()
+
+    const result = await service.upsert({
+      topic: 'identity.role',
+      topicLabel: '角色',
+      statement: '用户是软件开发工程师',
+    })
+
+    expect(result.status).toBe('applied')
+    expect(result.memory?.topicLabel).toBe('角色')
+    expect(store.active.size).toBe(1)
   })
 
   it('归一化后为空返回 rejected 且不落盘', async () => {
@@ -515,6 +527,95 @@ describe('MemoryService.upsert', () => {
     expect(again.status).toBe('unchanged')
     expect(again.memory?.id).toBe(first.memory?.id)
   })
+
+  it('写入子主题后父主题自动成为分类', async () => {
+    const { service } = harness()
+
+    const child = await service.upsert({
+      topic: 'identity.role',
+      statement: '是软件开发工程师',
+    })
+    const parent = await service.upsert({ topic: 'identity', statement: '需要中文回答' })
+
+    expect(child.status).toBe('applied')
+    expect(parent.status).toBe('applied')
+
+    const summaries = await service.topics()
+    expect(summaries.find((item) => item.topic === 'identity')).toMatchObject({
+      count: 2,
+      directCount: 1,
+    })
+    expect(summaries.find((item) => item.topic === 'identity.role')).toMatchObject({
+      parent: 'identity',
+      depth: 1,
+    })
+  })
+
+  it('approve 保留 proposed 的 topicLabel', async () => {
+    const { service } = harness()
+
+    await service.upsert({
+      topic: 'identity.role',
+      topicLabel: '角色',
+      statement: '是软件开发工程师',
+    })
+    const conflict = await service.upsert({
+      topic: 'identity.role',
+      topicLabel: '身份',
+      statement: '是架构师',
+    })
+    const result = await service.approve(conflict.change!.changeId)
+
+    expect(result.status).toBe('applied')
+    expect(result.memory?.topicLabel).toBe('身份')
+  })
+
+  it('分类主题可以容纳多条互不冲突的陈述', async () => {
+    const { store, service } = harness()
+
+    // 先写一条细分主题，让 code.style 成为"分类"（有子主题）。
+    await service.upsert({ topic: 'code.style.indent', statement: '使用 2 空格缩进' })
+    const first = await service.upsert({ topic: 'code.style', statement: '统一用 prettier' })
+    const second = await service.upsert({ topic: 'code.style', statement: '注释统一写中文' })
+
+    expect(first.status).toBe('applied')
+    expect(second.status).toBe('applied')
+    expect(store.active.size).toBe(3)
+    expect(store.pendingChanges.size).toBe(0)
+  })
+
+  it('细分（叶子）主题仍是槽位：同主题不同陈述进入 conflict pending', async () => {
+    const { service } = harness()
+
+    await service.upsert({ topic: 'code.style.indent', statement: '使用 2 空格缩进' })
+    const result = await service.upsert({
+      topic: 'code.style.indent',
+      statement: '使用 tab 缩进',
+    })
+
+    expect(result.status).toBe('pending_review')
+    expect(result.change?.kind).toBe('conflict')
+    expect(result.change?.topic).toBe('code.style.indent')
+    expect(result.change?.current?.statement).toBe('使用 2 空格缩进')
+  })
+
+  it('父 / 子主题已有相同陈述时返回 unchanged，不重复落库', async () => {
+    const { store, service } = harness()
+
+    const applied = await service.upsert({
+      topic: 'code.style.indent',
+      statement: '使用 2 空格缩进',
+    })
+    const fromParent = await service.upsert({
+      topic: 'code.style',
+      statement: '使用 2 空格缩进！',
+    })
+
+    expect(applied.status).toBe('applied')
+    expect(fromParent.status).toBe('unchanged')
+    expect(fromParent.memory?.id).toBe(applied.memory?.id)
+    expect(store.active.size).toBe(1)
+  })
 })
 
 describe('MemoryService.approve', () => {
@@ -522,11 +623,11 @@ describe('MemoryService.approve', () => {
     const { store, service } = harness()
 
     const current = await service.upsert({
-      topic: 'code.testing',
+      topic: 'code.testing.framework',
       statement: '统一用 vitest 写测试',
     })
     const conflict = await service.upsert({
-      topic: 'code.testing',
+      topic: 'code.testing.framework',
       statement: '测试统一用 jest',
       rationale: 'jest 生态更成熟',
     })
@@ -538,7 +639,7 @@ describe('MemoryService.approve', () => {
     // 第一个 upsert 用掉 id 0，conflict 的 changeId 用掉 token 1，批准后用 token 2。
     expect(result.memory).toEqual({
       id: recordId(2),
-      topic: 'code.testing',
+      topic: 'code.testing.framework',
       statement: '测试统一用 jest',
       rationale: 'jest 生态更成熟',
       confidence: DEFAULT_CONFIDENCE,
@@ -553,11 +654,11 @@ describe('MemoryService.approve', () => {
     expect(store.history[0].reason).toContain(changeId)
 
     expect(store.pendingChanges.size).toBe(0)
-    expect(await service.get('code.testing', current.memory!.id)).toBeNull()
-    expect(await service.get('code.testing', result.memory!.id)).not.toBeNull()
+    expect(await service.get('code.testing.framework', current.memory!.id)).toBeNull()
+    expect(await service.get('code.testing.framework', result.memory!.id)).not.toBeNull()
     expect(store.journal.at(-1)).toMatchObject({
       action: 'apply',
-      topic: 'code.testing',
+      topic: 'code.testing.framework',
       id: result.memory!.id,
       changeId,
     })
@@ -603,11 +704,11 @@ describe('MemoryService.approve 失败语义', () => {
   }> {
     const { store, service } = harness()
     const current = await service.upsert({
-      topic: 'code.testing',
+      topic: 'code.testing.framework',
       statement: '统一用 vitest 写测试',
     })
     const conflict = await service.upsert({
-      topic: 'code.testing',
+      topic: 'code.testing.framework',
       statement: '测试统一用 jest',
     })
     return {
@@ -625,7 +726,7 @@ describe('MemoryService.approve 失败语义', () => {
     await expect(service.approve(changeId)).rejects.toThrow('R2 putActive failed')
 
     expect(store.active.size).toBe(1)
-    expect(store.active.has(`code.testing/${currentId}`)).toBe(true)
+    expect(store.active.has(`code.testing.framework/${currentId}`)).toBe(true)
     expect(store.history).toHaveLength(0)
     expect(store.pendingChanges.has(changeId)).toBe(true)
     expect(store.journal.some((event) => event.action === 'apply')).toBe(false)
@@ -637,7 +738,7 @@ describe('MemoryService.approve 失败语义', () => {
 
     await expect(service.approve(changeId)).rejects.toThrow('R2 moveToHistory failed')
 
-    const active = await store.listActive('code.testing')
+    const active = await store.listActive('code.testing.framework')
     const applied = active.find((record) => record.statement === '测试统一用 jest')
     // 新记录先落盘：即使移历史失败，新的偏好也已生效。
     expect(applied).toMatchObject({ version: 2, supersedes: currentId })
@@ -652,7 +753,7 @@ describe('MemoryService.approve 失败语义', () => {
     const { store, service, currentId, changeId } = await conflictPending()
     store.failMoveWith = new Error('R2 moveToHistory failed')
     await expect(service.approve(changeId)).rejects.toThrow('R2 moveToHistory failed')
-    const appliedId = (await store.listActive('code.testing')).find(
+    const appliedId = (await store.listActive('code.testing.framework')).find(
       (record) => record.statement === '测试统一用 jest',
     )!.id
 
@@ -663,7 +764,7 @@ describe('MemoryService.approve 失败语义', () => {
     expect(retried.memory?.id).toBe(appliedId)
     // 只有一条新版本 active，旧版进 history，pending 清空。
     expect(store.active.size).toBe(1)
-    expect(store.active.has(`code.testing/${appliedId}`)).toBe(true)
+    expect(store.active.has(`code.testing.framework/${appliedId}`)).toBe(true)
     expect(store.history.map((entry) => entry.record.id)).toEqual([currentId])
     expect(store.pendingChanges.size).toBe(0)
     expect(store.journal.filter((event) => event.action === 'apply')).toHaveLength(1)
@@ -782,23 +883,78 @@ describe('MemoryService 查询面', () => {
     expect(await service.search('pnpm', { limit: 0 })).toEqual([])
   })
 
-  it('topics 返回固定 12 项并带 active 数量', async () => {
+  it('topics 由数据推导：主题、标签、层级与子树计数', async () => {
     const { service } = harness()
 
     await service.upsert({ topic: 'tooling.package-manager', statement: '统一用 pnpm' })
-    await service.upsert({ topic: 'code.testing', statement: '统一用 vitest' })
+    await service.upsert({
+      topic: 'code.testing.framework',
+      topicLabel: '框架',
+      statement: '统一用 vitest',
+    })
+    await service.upsert({ topic: 'code.testing', statement: '测试先写失败用例' })
 
     const summaries = await service.topics()
 
-    expect(summaries).toHaveLength(12)
+    expect(summaries.map((item) => item.topic)).toEqual([
+      'code.testing',
+      'code.testing.framework',
+      'tooling.package-manager',
+    ])
     expect(summaries.find((item) => item.topic === 'tooling.package-manager')).toEqual({
       topic: 'tooling.package-manager',
       label: '包管理器',
       description: 'pnpm / npm / yarn 的选择、lockfile 与依赖安装习惯',
+      parent: null,
+      depth: 1,
       count: 1,
+      directCount: 1,
     })
-    expect(summaries.find((item) => item.topic === 'code.testing')?.count).toBe(1)
-    expect(summaries.filter((item) => item.count === 0)).toHaveLength(10)
+    expect(summaries.find((item) => item.topic === 'code.testing')).toMatchObject({
+      parent: null,
+      depth: 1,
+      count: 2,
+      directCount: 1,
+    })
+    expect(summaries.find((item) => item.topic === 'code.testing.framework')).toMatchObject({
+      label: '框架',
+      parent: 'code.testing',
+      depth: 2,
+      count: 1,
+      directCount: 1,
+    })
+  })
+
+  it('list 父主题返回整棵子树', async () => {
+    const { service } = harness()
+
+    await service.upsert({ topic: 'code.style.indent', statement: '使用 2 空格缩进' })
+    await service.upsert({ topic: 'code.style', statement: '统一用 prettier' })
+    await service.upsert({ topic: 'tooling.package-manager', statement: '统一用 pnpm' })
+
+    const style = await service.list('code.style')
+    expect(style.map((record) => record.topic).sort()).toEqual([
+      'code.style',
+      'code.style.indent',
+    ])
+    expect(await service.list('code.style.indent')).toHaveLength(1)
+  })
+
+  it('search 分类主题在子树内过滤并截断', async () => {
+    const { search, service } = harness()
+    // 先让 code.style 成为分类（数据里有子主题）。
+    await service.upsert({ topic: 'code.style.indent', statement: '使用 2 空格缩进' })
+    search.hits = [
+      { id: 'hit-a', topic: 'code.style.indent', statement: '使用 2 空格缩进', score: 0.9 },
+      { id: 'hit-b', topic: 'code.style.comment', statement: '注释写中文', score: 0.8 },
+      { id: 'hit-c', topic: 'tooling.package-manager', statement: '统一用 pnpm', score: 0.7 },
+    ]
+
+    const hits = await service.search('风格', { limit: 2, topic: 'code.style' })
+
+    expect(hits.map((hit) => hit.id)).toEqual(['hit-a', 'hit-b'])
+    // 分类主题不能下推到索引过滤，先放大取回数量（max*5 与 max+10 取大，上限 200）。
+    expect(search.calls.at(-1)).toEqual({ query: '风格', options: { limit: 12 } })
   })
 
   it('pending 返回待裁决列表', async () => {
@@ -894,7 +1050,7 @@ describe('MemoryService.extract', () => {
         confidence: 0.75,
       },
       {
-        topic: 'tooling.unknown',
+        topic: 'Bad Topic',
         statement: '未知主题',
         confidence: 0.6,
       },
@@ -903,7 +1059,7 @@ describe('MemoryService.extract', () => {
     expect(results.map((item) => item.status)).toEqual([
       'applied',
       'pending_review',
-      'unknown_topic',
+      'invalid_topic',
     ])
     expect(results[0].memory?.source).toEqual(source)
     expect(results[0].memory?.confidence).toBe(0.9)

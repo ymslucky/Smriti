@@ -8,8 +8,8 @@ R2 是唯一真源，AI Search 是可重建的派生索引，Worker 网关是唯
 
 **写入**：模型调 MCP `memory_upsert` → 网关校验 topic 与正文 → 查同 topic 的 active：
 
-- 无冲突：写 `memories/active/{topic}/{id}.md` → 审计 → 触发 AI Search 同步 → 返回 `applied`；
-- 同 topic 不同陈述，或检索到高分近重复：写 `_pending/` → 返回 `pending_review`，active 不动。
+- 无冲突：写 `memories/active/{topic}/{id}.md` → 审计 → 触发 AI Search 同步 → 返回 `applied`（分类主题可多条并存）；
+- 槽位主题已有不同陈述，或跨主题检索到高分近重复：写 `_pending/` → 返回 `pending_review`，active 不动。
 
 **裁决**：人执行 `/memory review` → 网关返回旧/新对比 → 批准时旧版移入 `_history/`、新版写 active（`supersedes` 指向旧 id）→ 同步；拒绝时归档 pending，active 不变。
 
@@ -33,7 +33,14 @@ memories/_index/recent.json              # 最近写入索引，用于召回合�
 
 ## 主题词表
 
-固定 12 个 topic（见 `src/topics.ts`）。未知 topic 一律拒绝，写入返回 `unknown_topic` 与可用列表；新增主题只能改代码并部署。
+**没有固定词表**：topic 由 AI 在写入时创建，`memory_upsert` 只校验语法 —— 小写字母 / 数字 / 连字符，点分最多 3 段（`identity`、`identity.role`、`project.smriti.stack`），首次写入即成为主题。
+
+- **层级由数据推导**：某个 topic 一旦出现 `a.b`，`a` 就是分类；分类可容纳多条，没有子主题的 topic 是槽位（一条 active），槽位冲突仍进 `_pending` 等裁决；
+- **展示名**：`topic_label` 可选，同一主题以最近一次带 label 的写入为准；没有 label 时回退到 `src/topics.ts` 的种子提示（中文名 + 说明），再回退到 id；
+- **种子提示不是白名单**：`TOPIC_HINTS` 只用于展示名、说明与自动捕获关键词，AI 可以创建任意其它合法 id；
+- **读取按子树**：`memory_list` / `/v1/memories` 传分类主题时返回整棵子树；`memory_search` 传分类主题时先放大取回数量再在内存里按子树过滤（AI Search 的 filter 只做精确匹配）；
+- **一致性**：父 / 子主题已有归一化后相同的陈述时返回 `unchanged`，同一偏好不会在不同粒度重复落库；
+- 主题在没有任何记录时不出现在 `memory_topics` 里；删掉最后一条记录后主题自然消失。
 
 ## 一致性
 

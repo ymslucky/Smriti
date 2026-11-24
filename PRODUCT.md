@@ -20,7 +20,7 @@ Smriti 是给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search �
 
 ## Positioning
 
-「只存精炼偏好 + 12 个固定主题 + 分歧交给人裁决」——不是让模型自由追加记忆。同主题的新陈述不直接覆盖现有陈述，而是进入 `_pending` 等人工裁决；记录带版本号与 `supersedes` 链，删除是保留 30 天历史的软删除。相邻产品能抄走向量检索，抄不走「写入先过主题词表、冲突必须由人裁决」这条治理路径。
+「只存精炼偏好 + 主题由 AI 命名与分层 + 槽位分歧交给人裁决」——不是让模型自由追加记忆。没有子主题的 topic 是槽位，新陈述不直接覆盖现有陈述，而是进入 `_pending` 等人工裁决；有子主题的 topic 是分类，可容纳多条互不冲突的陈述。记录带版本号与 `supersedes` 链，删除是保留 30 天历史的软删除。相邻产品能抄走向量检索，抄不走「主题由写入方按层级声明、同槽位冲突必须由人裁决」这条治理路径。
 
 ## Operating Context
 
@@ -31,9 +31,9 @@ Smriti 是给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search �
 
 ## Capabilities and Constraints
 
-- 只读视图，四个区块：概览（记忆总数 / 待裁决数 / 主题数 / AI Search 是否就绪 + 最近更新 5 条）、记忆（表格 + 主题筛选 + 关键词搜索）、待裁决（只读对比 + changeId）、主题（12 个固定主题计数）；
+- 只读视图，四个区块：概览（记忆总数 / 待裁决数 / 已用主题数 / AI Search 是否就绪 + 最近更新 5 条）、记忆（表格 + 主题筛选 + 关键词搜索）、待裁决（只读对比 + changeId）、主题（由数据推导的主题树与计数）；主题没有固定词表，点分表示层级；
 - 可用只读端点：`GET /v1/stats`、`GET /v1/memories?topic=&limit=`、`GET /v1/topics`、`GET /v1/pending`、`POST /v1/recall`、`GET /v1/health`；
-- 术语固定：**记忆 / 主题 / 待裁决**。`topic` 是固定词表里的标识（如 `tooling.package-manager`），展示用它的 `label`；
+- 术语固定：**记忆 / 主题 / 待裁决**。`topic` 是写入方声明的层级标识（如 `identity.role`），展示名优先用 `topic_label`，其次用种子提示的中文名，最后回退到 id；
 - 状态必须齐备：加载骨架、空状态（无记忆 / 无待裁决）、错误态（网关不可达 / 401 鉴权）、窄屏 ≥375px 单列；
 - 深浅色都可用（`prefers-color-scheme`），焦点可见、键盘可达、`prefers-reduced-motion` 生效；
 - 中文文案；数字与时间格式稳定；

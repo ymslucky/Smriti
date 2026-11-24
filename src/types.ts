@@ -10,6 +10,8 @@ export interface MemorySource {
 export interface MemoryRecord {
   id: string
   topic: string
+  /** 主题展示名（由写入方给出，可缺省；缺省时回退到种子提示或 id）。 */
+  topicLabel?: string
   statement: string
   rationale?: string
   confidence: number
@@ -32,6 +34,7 @@ export interface PendingChange {
     rationale?: string
     confidence: number
     source?: MemorySource
+    topicLabel?: string
   }
   idempotencyKey?: string
   createdAt: IsoDate
@@ -74,7 +77,8 @@ export type UpsertStatus =
   | 'unchanged'
   | 'pending_review'
   | 'rejected'
-  | 'unknown_topic'
+  /** topic 语法不合法（不是词表限制）。 */
+  | 'invalid_topic'
 
 export interface UpsertResult {
   status: UpsertStatus
@@ -91,6 +95,8 @@ export interface RecallItem {
 
 export interface ExtractCandidate {
   topic: string
+  /** 主题展示名，可选。 */
+  topicLabel?: string
   statement: string
   rationale?: string
   confidence: number
@@ -101,11 +107,20 @@ export interface TopicSummary {
   topic: string
   label: string
   description: string
+  /** 细分主题的父主题；根主题为 null。 */
+  parent: string | null
+  /** 根主题 0，细分主题 1。 */
+  depth: number
+  /** 含全部细分主题的条目数（父主题用于展示分布）。 */
   count: number
+  /** 只统计直接写在该主题上的条目数（叶子主题与 count 相同）。 */
+  directCount: number
 }
 
 export interface UpsertInput {
   topic: string
+  /** 主题展示名；同一主题以最近一次带 label 的写入为准。 */
+  topicLabel?: string
   statement: string
   rationale?: string
   confidence?: number

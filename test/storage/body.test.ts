@@ -130,4 +130,16 @@ describe('serializeMetadata', () => {
     expect(metadata.updated_at).toMatch(/^\d{13}$/)
     expect(metadata.version).toBe('7')
   })
+
+  it('round-trips topicLabel through customMetadata', () => {
+    const metadata = serializeMetadata(makeRecord({ topicLabel: '身份' }))
+    expect(metadata.topic_label).toBe('身份')
+    const parsed = parseBody('# Statement\n', {
+      ...metadata,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })
+    expect(parsed.topicLabel).toBe('身份')
+    // 未写 topicLabel 时不产生该字段。
+    expect(serializeMetadata(makeRecord()).topic_label).toBeUndefined()
+  })
 })

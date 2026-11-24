@@ -17,11 +17,21 @@ import type { Env } from '../env'
 import { createAiSearch } from '../search/ai-search'
 import { createMemoryService } from '../service'
 import { createR2Store } from '../storage/r2-store'
-import { TOPIC_NAMES } from '../topics'
+import { MAX_TOPIC_ID_LENGTH, isValidTopicId } from '../topics'
 import type { SearchHealth, SearchHit, UpsertResult } from '../types'
 
-/** 固定主题词表：未知 topic 在 schema 层就被拒绝。 */
-const topicSchema = z.enum(TOPIC_NAMES)
+/**
+ * 主题 id：不再按固定词表枚举，只做语法校验。
+ * 首次写入即创建主题；层级用点分表达（最多 3 段）。
+ */
+const topicSchema = z
+  .string()
+  .min(1)
+  .max(MAX_TOPIC_ID_LENGTH)
+  .refine(isValidTopicId, {
+    message:
+      'topic 必须是小写 slug（字母 / 数字 / 连字符），点分最多 3 段，例如 identity.role',
+  })
 
 /** 检索默认返回条数（与 service 的 DEFAULT_SEARCH_LIMIT 对齐）。 */
 const DEFAULT_SEARCH_LIMIT = 10
@@ -46,6 +56,8 @@ export const toolSchemas = {
   memory_topics: z.object({}),
   memory_upsert: z.object({
     topic: topicSchema,
+    /** 主题展示名；同一主题以最近一次带 label 的写入为准。 */
+    topic_label: z.string().min(1).max(80).optional(),
     statement: z.string().min(1, 'statement 不能为空'),
     rationale: z.string().optional(),
     confidence: z.number().min(0).max(1).optional(),
@@ -170,7 +182,8 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
   server.registerTool(
     'memory_search',
     {
-      description: '在已保存的持久偏好中做检索。query 必填，topic 用于限定固定主题词表，limit 默认 10。',
+      description:
+        '在已保存的持久偏好中做检索。query 必填，topic 可选（分类主题按整棵子树过滤），limit 默认 10。',
       inputSchema: toolSchemas.memory_search,
     },
     async ({ query, topic, limit }) =>
@@ -201,7 +214,8 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
   server.registerTool(
     'memory_topics',
     {
-      description: '列出固定主题词表及每个主题的条目数。',
+      description:
+        '列出由写入记录形成的主题树（主题在首次写入时自动创建，不需要预先登记）。count 为含子主题的合计，directCount 只算直接写在该主题上的条目。',
       inputSchema: toolSchemas.memory_topics,
     },
     async () => guarded(async () => textResult({ topics: await service.topics() })),
@@ -211,14 +225,16 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
     'memory_upsert',
     {
       description:
-        '写入一条持久偏好。冲突或近似重复时返回 status=pending_review 并生成待裁决变更，不会直接覆盖。' +
-        'idempotency_key 可用同一键安全重试。',
+        '写入一条持久偏好。topic 自由命名：小写 slug、点分最多 3 段（如 identity.role），首次写入即创建；' +
+        'topic_label 可选，作为展示名。没有子主题的 topic 是槽位，已有不同陈述时返回 status=pending_review；' +
+        '有子主题的 topic 是分类，可容纳多条。idempotency_key 可用同一键安全重试。',
       inputSchema: toolSchemas.memory_upsert,
     },
-    async ({ topic, statement, rationale, confidence, idempotency_key, source }) =>
+    async ({ topic, topic_label, statement, rationale, confidence, idempotency_key, source }) =>
       guarded(async () => {
         const result = await service.upsert({
           topic,
+          topicLabel: topic_label,
           statement,
           rationale,
           confidence,
@@ -233,7 +249,7 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
   server.registerTool(
     'memory_list',
     {
-      description: '列出持久偏好；topic 可选，limit 默认 50、上限 200。',
+      description: '列出持久偏好；topic 可选（取分类主题时返回整棵子树），limit 默认 50、上限 200。',
       inputSchema: toolSchemas.memory_list,
     },
     async ({ topic, limit }) =>

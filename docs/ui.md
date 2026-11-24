@@ -37,7 +37,7 @@ docs/ui.md     本文
 
 全部为同源请求、`credentials: 'same-origin'`，前端不处理 token；没有调用任何写入 / 审批 / 删除端点。
 
-与 edge-fix 的最终实现已对表（其确认与 `docs/ui-plan.md` §2 一致）：`totals.topics` 是固定词表大小（12），不是「有记忆的主题数」，与页面写的「固定词表」一致；`byTopic` 恒含 12 项（含 `count: 0`），正好喂满主题区；`recent` 只有 `{id,topic,statement,updatedAt}`（无 version），所以最近更新不显示版本；401 返回 JSON `{error:{code:'unauthorized'}}`，前端按状态码判定、不看响应体；`/ui` 自身也在鉴权之后，`/ui` 与 `/ui/` 都直接返回 `index.html`，静态资源以绝对路径 `/ui/styles.css`、`/ui/app.js` 原样转发给 `ASSETS`；无 `ASSETS` 绑定时 `/ui` 返回 503 `{error:{code:'assets_unavailable'}}`。
+与 edge-fix 的最终实现已对表（其确认与 `docs/ui-plan.md` §2 一致）：`totals.topics` 是「有记忆的主题数」（按 `directCount > 0` 统计）；`byTopic` 只含**实际存在记录**的主题（含 `parent` 与子树 `count`），没有记录的主题不出现；`recent` 只有 `{id,topic,statement,updatedAt}`（无 version），所以最近更新不显示版本；401 返回 JSON `{error:{code:'unauthorized'}}`，前端按状态码判定、不看响应体；`/ui` 自身也在鉴权之后，`/ui` 与 `/ui/` 都直接返回 `index.html`，静态资源以绝对路径 `/ui/styles.css`、`/ui/app.js` 原样转发给 `ASSETS`；无 `ASSETS` 绑定时 `/ui` 返回 503 `{error:{code:'assets_unavailable'}}`。
 
 ## 4. 设计取向（详见 `DESIGN.md`）
 
@@ -54,7 +54,7 @@ docs/ui.md     本文
 | 状态 | 表现 |
 |---|---|
 | 加载 | 骨架块：统计数字 `—`、表格 5 行、最近更新 5 行、勘误单 2 张、主题 6 行；`aria-busy="true"`；骨架 1.5s 呼吸（`reduced-motion` 下停止） |
-| 空·无记忆 | 「还没有记忆」+ 一句「dsh 通过 memory_upsert 写入偏好」；统计归零，主题仍列 12 行 0 计数 |
+| 空·无记忆 | 「还没有记忆」+ 一句「dsh 通过 memory_upsert 写入偏好」；统计归零，主题区仍列完整主题树（0 计数） |
 | 空·无待裁决 | 「没有待裁决」+ 说明下一次分歧会出现在这里 |
 | 空·筛选无结果 | 「「代码评审」还没有记忆 / 换一个主题…」+ 清除主题筛选 |
 | 空·检索无结果 | 「没有命中的记忆」+ 清除搜索；若命中存在但被主题筛掉，文案改为「检索命中 N 条，都不在「X」下」+ 清除主题筛选 |
@@ -83,7 +83,7 @@ docs/ui.md     本文
 
 没有真实后端可连，验证用两个临时工具（都在 `%TEMP%`，未进入仓库、已随会话结束废弃）：
 
-1. 一个 Node mock 服务，按本文件 §3 的契约返回 14 条合成记忆、3 条待裁决、12 个主题，并有 `empty` / `error(500)` / `auth(401)` 三种模式。合成数据只用于截图，**没有写进任何交付文件**。
+1. 一个 Node mock 服务，按本文件 §3 的契约返回 14 条合成记忆、3 条待裁决、完整主题树，并有 `empty` / `error(500)` / `auth(401)` 三种模式。合成数据只用于截图，**没有写进任何交付文件**。
 2. 用 CDP 驱动 headless Chrome（`Chrome/158`），在 1280×900 与 375×812、浅色与深色下整页截图，并回读 DOM/计算样式做行为验证。
 
 截图（留在 `%TEMP%\smriti-ui-review\`，未提交）：`desktop-light.png`、`desktop-dark.png`、`mobile-light.png`、`mobile-dark.png`、`mobile-dark-top.png`、`search.png`、`filter-empty.png`、`search-filter-empty.png`、`empty.png`、`empty-mobile.png`、`error.png`、`auth.png`、`sticky.png`、`focus-input.png`、`copy.png`、`copy-ok.png`、`scrolled.png`。最后的字体级差收敛与底色修法之后重新截了一轮，上面的结论都基于最终版本。
