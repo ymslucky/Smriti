@@ -125,6 +125,7 @@ curl -s https://smriti.<域名>/mcp \
 | `memory_search` 报 `ai_search_not_found` | 实例名与命名空间：控制台 AI Search 里是否真有 `AI_SEARCH_INSTANCE`（默认 `memory`）这个实例；命名空间里只剩一个实例时 Worker 会自动改用它（日志有 warn） |
 | `/v1/stats` 显示 `aiSearch: false` | 看同响应里的 `searchError`：`AI_SEARCH` 绑定未配置 / 实例不存在 / `info()` 失败，三种原因文案不同 |
 | 检索为空 | AI Search 实例是否连桶、path filter 是否放行 `memories/active/` |
+| `memory_search` 带 topic 报 `metadata_filter_unknown_field` | 实例 metadata schema 缺少 `topic` 字段（应是 string）；Worker 已自动回退为本地精确过滤（日志有 warn），补 schema 后过滤会重新下推 |
 | 召回只剩"最近 N 条" | 日志里找 `smriti: recall 降级为 recent 兜底`；说明检索后端不可用，不是没有数据 |
 | 刚写入却搜不到 | 写入后已在 `waitUntil` 里触发一次 `jobs.create()`，但 AI Search 建索引还要几十秒；`memory_get` 立即可读，`memory_search` 会滞后 |
 | 写入不生效 | R2 对象是否生成；同步是否在冷却 |

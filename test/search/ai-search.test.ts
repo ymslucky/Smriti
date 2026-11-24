@@ -85,6 +85,37 @@ describe('createAiSearch', () => {
     ])
   })
 
+  it('topic 过滤不被后端支持时回退为本地精确过滤', async () => {
+    const payloads: SearchPayload[] = []
+    const search = vi.fn(async (input: unknown) => {
+      const payload = input as SearchPayload
+      payloads.push(payload)
+      if (payload.ai_search_options.retrieval.filters !== undefined) {
+        // 线上真实报错：AiSearchError: metadata_filter_unknown_field
+        throw { name: 'AiSearchError', message: 'metadata_filter_unknown_field' }
+      }
+      return {
+        chunks: [
+          realChunk('code.testing', 'mem_1', '单元测试用 vitest', 0.9),
+          realChunk('tooling.package-manager', 'mem_2', '默认使用 pnpm', 0.8),
+        ],
+      }
+    })
+    const { binding } = fakeBinding({ search })
+    const index = createAiSearch(binding, { instance: 'memory' })
+
+    const hits = await index.search('测试', { limit: 3, topic: 'code.testing' })
+
+    expect(hits).toEqual([
+      { id: 'mem_1', topic: 'code.testing', statement: '单元测试用 vitest', score: 0.9 },
+    ])
+    expect(payloads).toHaveLength(2)
+    expect(payloads[0].ai_search_options.retrieval.filters).toEqual({ topic: 'code.testing' })
+    // 回退请求不带 filter，并放大取回数量后再本地精确过滤。
+    expect(payloads[1].ai_search_options.retrieval.filters).toBeUndefined()
+    expect(payloads[1].ai_search_options.retrieval.max_num_results).toBe(15)
+  })
+
   it('兼容顶层 key 的旧响应形状（chunks/data 两种包装都识别）', async () => {
     for (const wrapper of ['chunks', 'data'] as const) {
       const search = vi.fn(async (_input: unknown) => ({

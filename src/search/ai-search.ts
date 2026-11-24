@@ -187,6 +187,23 @@ function isRateLimited(error: unknown): boolean {
   return typeof error === 'string' && error.includes('429')
 }
 
+/**
+ * 后端不接受 topic 过滤（实测报 `metadata_filter_unknown_field`）。
+ *
+ * 线上这条错误既可能来自实例的 metadata schema 没建 `topic` 字段，也可能来自
+ * filter 形状不被接受。两种情况下都退回"不过滤取回 + 本地精确过滤"，保证
+ * `memory_search` 带 topic 时可用；具体原因由日志里的 warn 说明。
+ */
+const FILTER_ERROR_HINTS = /metadata_filter|unknown.?field|invalid.?filter/i
+
+function isFilterUnsupported(error: unknown): boolean {
+  if (typeof error === 'string') return FILTER_ERROR_HINTS.test(error)
+  if (!isRecord(error)) return false
+  if (typeof error.name === 'string' && FILTER_ERROR_HINTS.test(error.name)) return true
+  if (typeof error.message === 'string' && FILTER_ERROR_HINTS.test(error.message)) return true
+  return typeof error.code === 'string' && FILTER_ERROR_HINTS.test(error.code)
+}
+
 export function createAiSearch(
   binding: AiSearchBinding | undefined,
   options: AiSearchOptions,
@@ -369,6 +386,36 @@ export function createAiSearch(
     return { ok: true, instance: name, checkedAt }
   }
 
+  /** topic 过滤不受支持时只告警一次，避免每个请求刷日志。 */
+  let filterFallbackReported = false
+
+  /**
+   * 带 topic 的检索：优先把过滤下推给 AI Search；后端不支持时退回
+   * "放大取回 + 本地精确过滤"，保证带 topic 的检索始终可用。
+   */
+  async function runFilteredSearch(
+    name: string,
+    query: string,
+    limit: number,
+    topic: string | undefined,
+  ): Promise<SearchHit[]> {
+    if (topic === undefined) return runSearch(name, query, limit, undefined)
+    try {
+      return await runSearch(name, query, limit, topic)
+    } catch (error) {
+      if (!isFilterUnsupported(error)) throw error
+      if (!filterFallbackReported) {
+        filterFallbackReported = true
+        console.warn(
+          'smriti: AI Search 不接受 topic 过滤，回退为本地精确过滤：' + describeError(error),
+        )
+      }
+      const expanded = Math.min(200, Math.max(limit * 5, limit + 10))
+      const hits = await runSearch(name, query, expanded, undefined)
+      return hits.filter((hit) => hit.topic === topic).slice(0, limit)
+    }
+  }
+
   return {
     async search(query, { limit, topic }): Promise<SearchHit[]> {
       if (!binding) return []
@@ -380,7 +427,7 @@ export function createAiSearch(
       }
 
       try {
-        return await runSearch(name, query, limit, topic)
+        return await runFilteredSearch(name, query, limit, topic)
       } catch (error) {
         if (!isNotFound(error)) throw error
 
@@ -390,7 +437,7 @@ export function createAiSearch(
         const recovered = await resolve(true)
         if (recovered !== undefined && recovered !== name) {
           try {
-            return await runSearch(recovered, query, limit, topic)
+            return await runFilteredSearch(recovered, query, limit, topic)
           } catch (retryError) {
             if (!isNotFound(retryError)) throw retryError
           }

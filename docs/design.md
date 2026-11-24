@@ -61,6 +61,7 @@ Cloudflare Access 挡在自定义域名前：
 - 同步冷却 429：吞掉并等下次；
 - AI Search 不可用：`memory_search` 返回空并在结果里带 `degraded: true` + `reason`（不伪装成"没有记忆"），`memory_get` 仍可用；`/v1/stats` 的 `health.aiSearch` 做真实探活并带 `searchError`，`/v1/recall` 降级为 recent 兜底时写一条 error 日志；
 - AI Search 实例名与配置不一致：命名空间里只有一个实例时自动改用它（写 warn），否则降级并报出可见实例名；
+- AI Search 不接受 `topic` 过滤（线上报 `metadata_filter_unknown_field`，通常是实例 metadata schema 没建 `topic` 字段）：`memory_search` 自动退回"放大取回 + 本地精确过滤"，只写一条 warn，检索保持可用；
 - R2 写冲突：单写者，重试一次。
 
 ## 非目标
