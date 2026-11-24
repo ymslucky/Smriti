@@ -24,6 +24,7 @@ import type {
   MemoryRecord,
   PendingChange,
   PendingKind,
+  SearchHealth,
   SearchHit,
   TopicSummary,
   UpsertResult,
@@ -462,11 +463,18 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     return results
   }
 
+  /** 检索后端可达性：搜索实现不提供探活时视为未知（不拦业务）。 */
+  async function health(): Promise<SearchHealth> {
+    if (!searchIndex.health) return { ok: true, instance: 'unknown' }
+    return searchIndex.health()
+  }
+
   return {
     upsert,
     get,
     list,
     search,
+    health,
     forget,
     topics,
     recall,

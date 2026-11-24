@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { McpServer } from '@modelcontextprotocol/server'
 import type { MemoryService } from '../../src/contracts'
 import type { Env } from '../../src/env'
-import { buildServer, createSmritiMcpServer, toolSchemas } from '../../src/mcp/server'
+import { buildServer, createSmritiMcpServer, memorySearchPayload, toolSchemas } from '../../src/mcp/server'
 
 const TOOL_NAMES = [
   'memory_search',
@@ -133,5 +133,31 @@ describe('McpServer 构建', () => {
     const server = buildServer(env)
     expect(server).toBeInstanceOf(McpServer)
     expect(server.toolInputSchemaJson('memory_topics')).toBeDefined()
+  })
+})
+
+describe('memory_search 返回体', () => {
+  const hit = { id: 'mem_1', topic: 'code.style', statement: '使用 2 空格缩进', score: 0.9 }
+
+  it('检索后端健康或状态未知时只返回 hits', () => {
+    expect(memorySearchPayload([])).toEqual({ hits: [] })
+    expect(memorySearchPayload([], { ok: true, instance: 'memory' })).toEqual({ hits: [] })
+    expect(memorySearchPayload([hit], { ok: false, instance: 'memory' })).toEqual({ hits: [hit] })
+  })
+
+  it('空结果且后端不健康时显式标记 degraded，避免被当成"没有记忆"', () => {
+    expect(
+      memorySearchPayload([], { ok: false, instance: 'memory', reason: 'ai_search_not_found' }),
+    ).toEqual({
+      hits: [],
+      degraded: true,
+      reason: 'ai_search_not_found',
+    })
+    // reason 缺失时给出兜底文案，不出现 undefined。
+    expect(memorySearchPayload([], { ok: false, instance: 'memory' })).toEqual({
+      hits: [],
+      degraded: true,
+      reason: 'AI Search unavailable',
+    })
   })
 })

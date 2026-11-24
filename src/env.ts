@@ -4,10 +4,20 @@ import type { MemoryService, MemoryStore, SearchIndex } from './contracts'
 
 export interface AiSearchInstance {
   search(input: unknown): Promise<unknown>
+  /**
+   * 实例元信息（探活用）。真实绑定总会提供；测试替身可以省略，
+   * 此时 `health()` 退回命名空间列表探测。
+   */
+  info?(): Promise<unknown>
 }
 
 export interface AiSearchBinding {
   get(name: string): AiSearchInstance
+  /**
+   * 命名空间级实例列表。真实绑定（`ai_search_namespaces`）提供；省略时
+   * 无法区分"实例不存在"与"网络错误"，实现只做乐观解析。
+   */
+  list?(): Promise<unknown>
 }
 
 export interface Env {

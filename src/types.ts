@@ -45,6 +45,21 @@ export interface SearchHit {
   score: number
 }
 
+/**
+ * 检索后端（AI Search）的可达性。
+ *
+ * `instance` 是**实际使用**的实例名：配置名不存在但命名空间里只有一个实例时，
+ * 实现会自动切到那个实例，这里回报的就是它，便于运维对齐配置。
+ */
+export interface SearchHealth {
+  ok: boolean
+  instance: string
+  /** 失败原因（面向人排障）；ok 为 true 时不出现。 */
+  reason?: string
+  /** 本次探活时间（ISO 字符串），缓存命中时不刷新。 */
+  checkedAt?: IsoDate
+}
+
 export interface JournalEvent {
   at: IsoDate
   action: 'upsert' | 'apply' | 'reject' | 'forget' | 'recall' | 'extract' | 'cleanup'

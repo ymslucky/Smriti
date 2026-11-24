@@ -746,6 +746,50 @@ describe('GET /v1/stats', () => {
     expect(body.health).toEqual({ aiSearch: true, instance: 'memory-eu', authMode: 'dev' })
   })
 
+  it('检索后端不健康时 health 报 false 并带 searchError（不再假阳性）', async () => {
+    const health = vi.fn(async () => ({
+      ok: false,
+      instance: 'memory',
+      reason: 'ai_search_not_found',
+    }))
+    const searchWithHealth = fake.search as unknown as { health?: unknown }
+    searchWithHealth.health = health
+    try {
+      const env = devEnv({ AI_SEARCH: { get: () => ({ search: async () => ({}) }) } })
+
+      const response = await handle(new Request('https://smriti.example.com/v1/stats'), env, ctx)
+      const body = (await bodyOf(response)) as { health: unknown }
+      expect(body.health).toEqual({
+        aiSearch: false,
+        instance: 'memory',
+        authMode: 'dev',
+        searchError: 'ai_search_not_found',
+      })
+      expect(health).toHaveBeenCalledTimes(1)
+    } finally {
+      delete searchWithHealth.health
+    }
+  })
+
+  it('health 使用探活回报的实际实例名（自愈后与配置名不同）', async () => {
+    const searchWithHealth = fake.search as unknown as { health?: unknown }
+    searchWithHealth.health = vi.fn(async () => ({ ok: true, instance: 'smriti-memory' }))
+    try {
+      const env = devEnv({
+        AI_SEARCH: { get: () => ({ search: async () => ({}) }) },
+        AI_SEARCH_INSTANCE: 'memory',
+      })
+
+      const response = await handle(new Request('https://smriti.example.com/v1/stats'), env, ctx)
+      const body = (await bodyOf(response)) as {
+        health: { instance: string; aiSearch: boolean }
+      }
+      expect(body.health).toEqual({ aiSearch: true, instance: 'smriti-memory', authMode: 'dev' })
+    } finally {
+      delete searchWithHealth.health
+    }
+  })
+
   it('access 模式未鉴权返回 401 且不读取记忆', async () => {
     const response = await handle(
       new Request('https://smriti.example.com/v1/stats'),

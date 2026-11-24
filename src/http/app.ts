@@ -500,6 +500,9 @@ export async function handle(
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .slice(0, RECENT_MEMORY_LIMIT)
         .map(({ id, topic, statement, updatedAt }) => ({ id, topic, statement, updatedAt }))
+      // 真实探活（缓存由 SearchIndex 实现负责）。探活不可用时退回"绑定是否存在"，
+      // 那只是弱判断——绝不能把它当成检索健康，否则索引坏了仪表盘还是绿的。
+      const searchHealth = search.health ? await search.health() : undefined
       return json({
         totals: {
           memories: memories.length,
@@ -509,9 +512,12 @@ export async function handle(
         byTopic: topics.map(({ topic, label, count }) => ({ topic, label, count })),
         recent,
         health: {
-          aiSearch: env.AI_SEARCH !== undefined,
-          instance: env.AI_SEARCH_INSTANCE ?? 'memory',
+          aiSearch: searchHealth ? searchHealth.ok : env.AI_SEARCH !== undefined,
+          instance: searchHealth?.instance ?? env.AI_SEARCH_INSTANCE ?? 'memory',
           authMode: env.AUTH_MODE ?? 'access',
+          ...(searchHealth !== undefined && !searchHealth.ok
+            ? { searchError: searchHealth.reason ?? 'search backend unavailable' }
+            : {}),
         },
       })
     }

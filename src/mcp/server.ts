@@ -18,6 +18,7 @@ import { createAiSearch } from '../search/ai-search'
 import { createMemoryService } from '../service'
 import { createR2Store } from '../storage/r2-store'
 import { TOPIC_NAMES } from '../topics'
+import type { SearchHealth, SearchHit } from '../types'
 
 /** 固定主题词表：未知 topic 在 schema 层就被拒绝。 */
 const topicSchema = z.enum(TOPIC_NAMES)
@@ -89,6 +90,21 @@ async function guarded(run: () => Promise<CallToolResult>): Promise<CallToolResu
 }
 
 /**
+ * `memory_search` 的返回体。
+ *
+ * 空结果有两种完全不同的原因：真的没有记忆，或检索后端不可用（实例缺失/限流）。
+ * 后者以前会直接抛成 `isError`，或者被吞成"空"——模型无法区分"不知道"和
+ * "没有"。这里把已知的不健康状态显式标成 `degraded`，让调用方自己决定是否采信。
+ */
+export function memorySearchPayload(
+  hits: SearchHit[],
+  health?: SearchHealth,
+): Record<string, unknown> {
+  if (hits.length > 0 || health === undefined || health.ok) return { hits }
+  return { hits, degraded: true, reason: health.reason ?? 'AI Search unavailable' }
+}
+
+/**
  * 把 MemoryService 注册成 MCP 工具。
  * 不触碰 env / 绑定，因此可以在单测里用假 service 直接构造。
  */
@@ -102,14 +118,18 @@ export function createSmritiMcpServer(service: MemoryService): McpServer {
       inputSchema: toolSchemas.memory_search,
     },
     async ({ query, topic, limit }) =>
-      guarded(async () =>
-        textResult({
-          hits: await service.search(query, {
-            limit: limit ?? DEFAULT_SEARCH_LIMIT,
-            topic,
-          }),
-        }),
-      ),
+      guarded(async () => {
+        const hits = await service.search(query, {
+          limit: limit ?? DEFAULT_SEARCH_LIMIT,
+          ...(topic !== undefined ? { topic } : {}),
+        })
+        // 只有空结果且服务提供探活时才多花一次（缓存过的）调用。
+        const health =
+          hits.length === 0 && service.health
+            ? await service.health().catch(() => undefined)
+            : undefined
+        return textResult(memorySearchPayload(hits, health))
+      }),
   )
 
   server.registerTool(

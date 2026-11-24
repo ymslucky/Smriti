@@ -44,8 +44,13 @@ export function createRecall(
     let hits: SearchHit[] = []
     try {
       hits = await deps.search.search(query, { limit })
-    } catch {
-      // 检索不可用（本地无绑定、AI Search 限流/故障）时继续走 recent 兜底。
+    } catch (error) {
+      // 检索不可用（本地无绑定、AI Search 限流/故障）时继续走 recent 兜底，
+      // 但必须留痕：否则线上会静默退化成"最近 N 条"，语义检索失效却没人发现。
+      console.error(
+        'smriti: recall 降级为 recent 兜底，检索后端不可用：',
+        error instanceof Error ? error.message : String(error),
+      )
       hits = []
     }
 

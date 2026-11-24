@@ -327,3 +327,142 @@ describe('createAiSearch', () => {
     await expect(index.sync()).resolves.toBeUndefined()
   })
 })
+
+describe('createAiSearch 实例解析与探活', () => {
+  function notFoundError(): Error {
+    return Object.assign(new Error('ai_search_not_found'), { name: 'AiSearchNotFoundError' })
+  }
+
+  it('配置实例不存在但命名空间只有一个实例时自动改用该实例', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const search = vi.fn(async (_input: unknown) => ({
+      chunks: [realChunk('code.style', 'mem_1', '使用 2 空格缩进', 0.9)],
+    }))
+    const get = vi.fn(() => ({ search }))
+    const list = vi.fn(async () => ({ result: [{ id: 'smriti-memory' }] }))
+    const index = createAiSearch({ get, list } as unknown as AiSearchBinding, {
+      instance: 'memory',
+    })
+
+    await expect(index.search('缩进', { limit: 3 })).resolves.toEqual([
+      { id: 'mem_1', topic: 'code.style', statement: '使用 2 空格缩进', score: 0.9 },
+    ])
+    expect(get).toHaveBeenCalledWith('smriti-memory')
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('实例在解析后消失：降级为空结果，health 转为不健康，且只报一次错', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const search = vi.fn(async (_input: unknown) => {
+      throw notFoundError()
+    })
+    const get = vi.fn(() => ({ search }))
+    const list = vi
+      .fn()
+      // 首次解析：配置名存在。
+      .mockResolvedValueOnce({ result: [{ id: 'memory' }] })
+      // 失败后强制重解析：实例已被删除。
+      .mockResolvedValueOnce({ result: [] })
+      .mockResolvedValue({ result: [] })
+    const index = createAiSearch({ get, list } as unknown as AiSearchBinding, {
+      instance: 'memory',
+    })
+
+    await expect(index.search('缩进', { limit: 3 })).resolves.toEqual([])
+
+    const health = await index.health!()
+    expect(health.ok).toBe(false)
+    expect(health.instance).toBe('memory')
+    expect(health.reason).toContain('没有任何 AI Search 实例')
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('非"实例不存在"的错误继续抛给调用方，不静默降级', async () => {
+    const boom = new Error('network down')
+    const search = vi.fn(async (_input: unknown) => {
+      throw boom
+    })
+    const get = vi.fn(() => ({ search }))
+    const index = createAiSearch({ get } as unknown as AiSearchBinding, { instance: 'memory' })
+
+    await expect(index.search('x', { limit: 3 })).rejects.toBe(boom)
+  })
+
+  it('health 走真实探活（列表 + info）并按 TTL 缓存', async () => {
+    const info = vi.fn(async () => ({}))
+    const get = vi.fn(() => ({ search: vi.fn(), info }))
+    const list = vi.fn(async () => ({ result: [{ id: 'memory' }] }))
+    const index = createAiSearch({ get, list } as unknown as AiSearchBinding, {
+      instance: 'memory',
+      healthTtlMs: 60_000,
+    })
+
+    const first = await index.health!()
+    expect(first.ok).toBe(true)
+    expect(first.instance).toBe('memory')
+
+    const second = await index.health!()
+    expect(second).toBe(first)
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(info).toHaveBeenCalledTimes(1)
+  })
+
+  it('info() 探活失败不把实例判死（存在性由列表保证）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const info = vi.fn(async () => {
+      throw new Error('info temporarily unavailable')
+    })
+    const get = vi.fn(() => ({ search: vi.fn(), info }))
+    const list = vi.fn(async () => ({ result: [{ id: 'memory' }] }))
+    const index = createAiSearch({ get, list } as unknown as AiSearchBinding, {
+      instance: 'memory',
+    })
+
+    const health = await index.health!()
+    expect(health.ok).toBe(true)
+    expect(health.instance).toBe('memory')
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('绑定缺失时 health 明确报不可用，而不是假装健康', async () => {
+    const index = createAiSearch(undefined, { instance: 'memory' })
+
+    const health = await index.health!()
+    expect(health.ok).toBe(false)
+    expect(health.instance).toBe('memory')
+    expect(health.reason).toContain('AI_SEARCH')
+  })
+
+  it('列表不可用且没有 info 探针时 health 报不健康（不冒充健康）', async () => {
+    const list = vi.fn(async () => {
+      throw new Error('no permission')
+    })
+    const get = vi.fn(() => ({ search: vi.fn() }))
+    const index = createAiSearch({ get, list } as unknown as AiSearchBinding, {
+      instance: 'memory',
+    })
+
+    const health = await index.health!()
+    expect(health.ok).toBe(false)
+    expect(health.instance).toBe('memory')
+    expect(health.reason).toContain('no permission')
+  })
+
+  it('sync 遇到实例不存在时吞掉错误（cron 不反复失败）', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const create = vi.fn(async () => {
+      throw Object.assign(new Error('ai_search_not_found'), { code: 7002 })
+    })
+    const search = vi.fn(async (_input: unknown) => ({ chunks: [] }))
+    const get = vi.fn(() => ({ search, jobs: { create } }))
+    const index = createAiSearch({ get } as unknown as AiSearchBinding, { instance: 'memory' })
+
+    await expect(index.sync()).resolves.toBeUndefined()
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+})
