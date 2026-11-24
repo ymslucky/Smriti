@@ -114,6 +114,38 @@ export function shouldSyncAfterWrite(result: UpsertResult): boolean {
   return result.status === 'applied'
 }
 
+/**
+ * 用 R2 的现行记录水合检索命中。
+ *
+ * 索引里存的是渲染后的正文（`# {statement}` + 可选的 `## 理由`），且可能滞后于
+ * 删除/改写；直接把 `item.text` 交给模型会带出 Markdown 标题前缀与过期内容。
+ * `/v1/recall` 早就这么做了（`recall.ts` 的 `loadActive`），`memory_search`
+ * 也走同一条规则：按 `topic`+`id` 取现行记录，取不到（已删除/索引脏）就丢弃。
+ */
+export async function hydrateSearchHits(
+  service: Pick<MemoryService, 'get'>,
+  hits: SearchHit[],
+): Promise<SearchHit[]> {
+  const hydrated = await Promise.all(
+    hits.map(async (hit): Promise<SearchHit | undefined> => {
+      try {
+        const record = await service.get(hit.topic, hit.id)
+        if (record === null) return undefined
+        return {
+          id: record.id,
+          topic: record.topic,
+          statement: record.statement,
+          score: hit.score,
+        }
+      } catch {
+        // 单条读取失败（索引脏 id、R2 抖动）只丢这一条，不拖垮整次检索。
+        return undefined
+      }
+    }),
+  )
+  return hydrated.filter((hit): hit is SearchHit => hit !== undefined)
+}
+
 /** 由调用方注入的写入后钩子（HTTP 入口里是 `ctx.waitUntil(search.sync())`）。 */
 export interface McpWriteHooks {
   afterWrite?: () => void
@@ -143,10 +175,11 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
     },
     async ({ query, topic, limit }) =>
       guarded(async () => {
-        const hits = await service.search(query, {
+        const rawHits = await service.search(query, {
           limit: limit ?? DEFAULT_SEARCH_LIMIT,
           ...(topic !== undefined ? { topic } : {}),
         })
+        const hits = await hydrateSearchHits(service, rawHits)
         // 只有空结果且服务提供探活时才多花一次（缓存过的）调用。
         const health =
           hits.length === 0 && service.health

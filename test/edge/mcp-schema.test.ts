@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { McpServer } from '@modelcontextprotocol/server'
 import type { MemoryService } from '../../src/contracts'
 import type { Env } from '../../src/env'
 import {
   buildServer,
   createSmritiMcpServer,
+  hydrateSearchHits,
   memorySearchPayload,
   shouldSyncAfterWrite,
   toolSchemas,
@@ -149,6 +150,65 @@ describe('写入后的索引同步判定', () => {
     expect(shouldSyncAfterWrite({ status: 'unchanged' })).toBe(false)
     expect(shouldSyncAfterWrite({ status: 'rejected' })).toBe(false)
     expect(shouldSyncAfterWrite({ status: 'unknown_topic' })).toBe(false)
+  })
+})
+
+describe('检索命中水合', () => {
+  const rawHit = {
+    id: 'mem_1',
+    topic: 'code.style',
+    // 索引里的正文带 Markdown 标题前缀，直接返回会污染模型看到的陈述。
+    statement: '# 使用 2 空格缩进\n\n## 理由\n\n团队约定',
+    score: 0.8,
+  }
+
+  it('用 R2 现行记录替换索引正文，保留 score', async () => {
+    const get = vi.fn(async () => ({
+      id: 'mem_1',
+      topic: 'code.style',
+      statement: '使用 2 空格缩进',
+      confidence: 0.8,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      version: 1,
+    }))
+
+    await expect(hydrateSearchHits({ get }, [rawHit])).resolves.toEqual([
+      { id: 'mem_1', topic: 'code.style', statement: '使用 2 空格缩进', score: 0.8 },
+    ])
+    expect(get).toHaveBeenCalledWith('code.style', 'mem_1')
+  })
+
+  it('记录已被删除（null）或读取抛错时丢弃该命中，不拖垮整次检索', async () => {
+    const get = vi.fn(async (topic: string, id: string) => {
+      if (id === 'mem_gone') return null
+      if (id === 'mem_boom') throw new Error('r2 exploded')
+      return {
+        id,
+        topic,
+        statement: '仍在的记录',
+        confidence: 0.8,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        version: 1,
+      }
+    })
+
+    const hits = [
+      { id: 'mem_gone', topic: 'code.style', statement: '已删除', score: 0.9 },
+      { id: 'mem_boom', topic: 'code.style', statement: '读失败', score: 0.8 },
+      { id: 'mem_ok', topic: 'code.style', statement: '旧正文', score: 0.7 },
+    ]
+
+    await expect(hydrateSearchHits({ get }, hits)).resolves.toEqual([
+      { id: 'mem_ok', topic: 'code.style', statement: '仍在的记录', score: 0.7 },
+    ])
+  })
+
+  it('没有命中时不读 R2', async () => {
+    const get = vi.fn()
+    await expect(hydrateSearchHits({ get }, [])).resolves.toEqual([])
+    expect(get).not.toHaveBeenCalled()
   })
 })
 

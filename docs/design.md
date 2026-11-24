@@ -13,7 +13,7 @@ R2 是唯一真源，AI Search 是可重建的派生索引，Worker 网关是唯
 
 **裁决**：人执行 `/memory review` → 网关返回旧/新对比 → 批准时旧版移入 `_history/`、新版写 active（`supersedes` 指向旧 id）→ 同步；拒绝时归档 pending，active 不变。
 
-**读取**：`memory_search` 调 AI Search（混合检索 + topic 过滤）；`memory_get` 直读 R2，绕过索引滞后；召回时把检索结果与最近写入合并去重。
+**读取**：`memory_search` 调 AI Search（混合检索 + topic 过滤），命中后按 `topic`+`id` 用 `memory_get` 水合到 R2 现行记录（索引正文是渲染后的 `# statement`，且可能滞后于删除/改写）；已删除或读不到的命中直接丢弃。`memory_get` 直读 R2，绕过索引滞后；召回时把检索结果与最近写入合并去重。
 
 **自动召回**：dsh 插件在 `agent/pre-step` 调 `/v1/recall`，把命中偏好格式化为 `<memory_context>` 注入本步消息，同一 turn+step 只注入一次。
 
