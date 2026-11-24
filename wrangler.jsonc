@@ -25,8 +25,8 @@
   "ai_search_namespaces": [
     {
       "binding": "AI_SEARCH",
-      // Smriti 的索引实例在 ide 命名空间里；default 下只有别的项目的实例。
-      "namespace": "ide",
+      // Smriti 的索引实例：namespace `work` 下的 `memory`。
+      "namespace": "work",
       "remote": true
     }
   ],
