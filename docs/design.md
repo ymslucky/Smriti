@@ -60,7 +60,7 @@ memories/_index/recent.json              # 最近写入索引，用于召回合�
 
 ## 常驻记忆（core）
 
-`CORE_TOPIC_PREFIXES`（默认 `identity`）下的记录视为常驻记忆。`/v1/recall` 每次先带最多 `CORE_RECALL_LIMIT`（默认 5）条 core，再合并检索命中与最近写入，按 id 去重；core 项在返回里带 `core: true`。这让「角色 / 语言 / 硬约束」不依赖检索命中率也始终在场。
+`CORE_TOPIC_PREFIXES`（默认 `identity`）下的记录视为常驻记忆。`/v1/recall` 每次先带最多 `CORE_RECALL_LIMIT`（默认 5）条 core，再合并检索命中与最近写入，按 id 去重；core 项在返回里带 `core: true`，所有项都带 `topicLabel`（中文展示名，旧客户端可忽略）。这让「角色 / 语言 / 硬约束」不依赖检索命中率也始终在场。
 
 ## 主题词表
 

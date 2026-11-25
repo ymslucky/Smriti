@@ -45,7 +45,7 @@
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/mcp` | MCP 工具：search/get/topics/upsert/list/forget |
-| POST | `/v1/recall` | 插件召回，返回精简条目 |
+| POST | `/v1/recall` | 插件召回，返回精简条目（含中文 `topicLabel`） |
 | POST | `/v1/extract` | 自动捕获候选 |
 | GET | `/v1/pending` | 待裁决列表 |
 | POST | `/v1/pending/:id/approve` | 批准 |
