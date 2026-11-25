@@ -1,5 +1,7 @@
 # Smriti 只读看板（`public/ui/`）
 
+> 2026-11 更新：`/ui` 已重构为三栏工作台（左主题树、中记忆表、右详情 / 历史 / 待裁决），并新增历史视图。下文 §2–§8 的布局与状态描述对应**上一版**单列看板；当前实现以 `DESIGN.md` 的「2026-11 工作台重构」与 `public/ui` 为准。§3 的端点契约仍有效，另增 `GET /v1/history`。
+
 > 交付物：`public/ui/index.html`、`public/ui/styles.css`、`public/ui/app.js`，产品与视觉记录在 `PRODUCT.md`、`DESIGN.md`。本文记录设计取向、实现约束、验证过程与未验证项。
 
 ## 1. 记录方式（先说清替代了什么）

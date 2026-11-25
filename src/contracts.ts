@@ -7,6 +7,7 @@ import type {
   MemoryRecord,
   PendingChange,
   RecallItem,
+  ResolutionInput,
   SearchHealth,
   SearchHit,
   TopicSummary,
@@ -84,5 +85,7 @@ export interface MemoryService {
   restore(topic: string, id: string): Promise<MemoryRecord | null>
   approve(changeId: string): Promise<UpsertResult>
   reject(changeId: string, reason: string): Promise<boolean>
+  /** 调用方模型裁决：replace / merge / keep，立即生效且不需要人工。 */
+  resolve(changeId: string, input: ResolutionInput): Promise<UpsertResult>
   extract(candidates: ExtractCandidate[]): Promise<UpsertResult[]>
 }

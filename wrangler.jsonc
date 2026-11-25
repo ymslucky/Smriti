@@ -36,9 +36,8 @@
     "AI_SEARCH_INSTANCE": "memory",
     "AUTH_MODE": "access",
     "SYNC_INTERVAL_SECONDS": "900",
-    // 槽位冲突策略：manual（默认，进待裁决）或 auto（置信度达标自动生效，可回滚）。
-    "CONFLICT_POLICY": "manual",
-    "AUTO_APPLY_MIN_CONFIDENCE": "0.9",
+    // 冲突策略：caller（默认，调用方模型裁决）/ server（服务端直接覆盖）/ manual（人工）。
+    "CONFLICT_POLICY": "caller",
     // 常驻（core）记忆：这些前缀下的记录每次召回都会优先带上。
     "CORE_TOPIC_PREFIXES": "identity",
     "CORE_RECALL_LIMIT": "5"

@@ -2,13 +2,13 @@
 
 > 给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search 做检索，MCP 暴露读写工具。
 
-状态：M0–M4 完成，已部署（`typecheck` + 264 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
+状态：M0–M4 完成，已部署（`typecheck` + 275 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
 
 ## 它做什么
 
-- 模型通过 MCP 工具 `memory_search` / `memory_get` / `memory_topics` / `memory_upsert` / `memory_list` / `memory_forget` / `memory_history` 读写偏好；
+- 模型通过 MCP 工具 `memory_search` / `memory_get` / `memory_topics` / `memory_upsert` / `memory_list` / `memory_forget` / `memory_history` / `memory_resolve` 读写偏好；
 - 只存精炼偏好，**主题由 AI 在写入时创建**：小写 slug、点分最多 3 段（如 `identity.role`），没有固定词表；
-- 有子主题的 topic 是分类（可容纳多条）；没有子主题的 topic 是槽位，新陈述不直接覆盖，进 `_pending` 等人工裁决（`CONFLICT_POLICY=auto` 时高置信度冲突自动生效，可回滚）；
+- 有子主题的 topic 是分类（可容纳多条）；没有子主题的 topic 是槽位，新陈述不直接覆盖，返回 `pending_review` 由**调用方模型**用 `memory_resolve`（replace / merge / keep）自动裁决，不需要人工；
 - 每条记录带时间维度 `validFrom` / `validTo`：删除是**标记失效**并移入 history（保留 30 天），可查「某时刻有效的事实」，也可 `restore` 回滚；
 - `identity` 前缀下的记忆默认作为 core（常驻上下文），每次召回优先带上；
 - 人用 `/memory review` 批准或拒绝冲突。
@@ -27,7 +27,7 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 
 ## WebUI
 
-`/ui` 是一个只读仪表盘（Operate 模式）：概览统计、最近更新、记忆表格与主题筛选、语义/本地检索、待裁决的旧→新对比、由数据推导的主题树计数。没有写入、审批、删除按钮——裁决仍在 dsh 里用 `/memory` 命令完成。
+`/ui` 是一个只读的记忆工作台：左栏概览与主题树（点击筛选）、中间检索与记忆表、右栏详情 / 历史 / 待裁决。没有写入、审批、删除按钮——裁决由调用方模型完成，历史与回滚走 REST。设计见 `PRODUCT.md`、`DESIGN.md`、`docs/ui.md`。
 
 - 资源：`public/ui/{index.html,styles.css,app.js}`，零依赖、无构建步骤。
 - 设计：`PRODUCT.md`、`DESIGN.md`、`docs/ui.md`（令牌、状态矩阵、对比度与验证记录）。
@@ -44,8 +44,9 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 | POST | `/v1/extract` | 自动捕获候选 |
 | GET | `/v1/pending` | 待裁决列表 |
 | GET | `/v1/topics` | 由写入记录推导的主题树（含子树计数与展示名） |
-| POST | `/v1/pending/:id/approve` | 批准 |
-| POST | `/v1/pending/:id/reject` | 拒绝 |
+| POST | `/v1/pending/:id/approve` | 批准（人工兼容路径） |
+| POST | `/v1/pending/:id/reject` | 拒绝（人工兼容路径） |
+| POST | `/v1/pending/:id/resolve` | 模型裁决：`{decision: replace\|merge\|keep, statement?}`，不需要人工 |
 | GET | `/v1/stats` | WebUI 概览聚合（只读） |
 | GET | `/v1/memories?topic=&limit=` | WebUI 记忆列表（只读，limit 默认 200 / 上限 500） |
 | GET | `/v1/history?topic=&limit=&at=` | 归档历史；带 `at` 时返回该时刻有效的事实（active + history 合并），limit 默认 100 / 上限 500 |

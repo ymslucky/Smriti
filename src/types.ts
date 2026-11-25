@@ -98,13 +98,27 @@ export type UpsertStatus =
   /** topic 语法不合法（不是词表限制）。 */
   | 'invalid_topic'
 
+export type ResolutionDecision = 'replace' | 'merge' | 'keep'
+
+/** 调用方模型对待裁决变更的裁决结果。 */
+export interface ResolutionInput {
+  decision: ResolutionDecision
+  /** merge 时合并后的陈述；replace / keep 忽略。 */
+  statement?: string
+  rationale?: string
+  /** 裁决理由，写进 journal，便于审计。 */
+  reason?: string
+}
+
 export interface UpsertResult {
   status: UpsertStatus
   memory?: MemoryRecord
   change?: PendingChange
   message?: string
-  /** 槽位冲突按 `CONFLICT_POLICY=auto` 自动生效时为 true。 */
+  /** 由服务端策略自动生效时为 true（`CONFLICT_POLICY=server`）。 */
   autoApplied?: boolean
+  /** 调用方裁决时记录的决定。 */
+  resolved?: ResolutionDecision
 }
 
 export interface RecallItem {

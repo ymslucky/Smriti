@@ -14,7 +14,7 @@
 | 区块 | 内容 | 事实来源 |
 |---|---|---|
 | 页头 | 品牌 Smriti + 「MCP 接入教程」+ 徽标「HTTP 405 · 预期行为」+「返回看板」`/ui` | 任务约束、`styles.css` 的 `.binding` / `.brand` / `.btn--onbind` |
-| 这个端点是什么 | Streamable HTTP / JSON-RPC 2.0 / POST only，七个工具与用途，`/ui` 与 `/mcp` 的分工 | `src/mcp/server.ts` 的 `toolSchemas`、`DEFAULT_*_LIMIT`、工具描述 |
+| 这个端点是什么 | Streamable HTTP / JSON-RPC 2.0 / POST only，八个工具与用途，`/ui` 与 `/mcp` 的分工 | `src/mcp/server.ts` 的 `toolSchemas`、`DEFAULT_*_LIMIT`、工具描述 |
 | 为什么是 405 | GET 是页面导航不是 MCP 调用；405 + `Allow: POST`；两种响应体；健康检查用 `/healthz` | `src/http/app.ts` 的 `MCP_TUTORIAL_HEADERS`、`mcpMethodNotAllowedJson`、`/healthz` 路由 |
 | 30 秒验证 | `/ui` Console 的 `fetch('/mcp', …)`、带 service token 的 curl、initialize 顺序 | `src/http/app.ts` 的 MCP 头约定；`docs/deploy.md` §7；`test/edge/app.test.ts` 的 initialize → initialized → tools/call |
 | 常见错误码 | 401 / 500 / 405 / 404 / 503 五行，含含义与排查方向 | `src/auth/access.ts`、`src/http/app.ts` 的 `serveUi` / `jsonError` 路由；`README.md` |
@@ -28,7 +28,7 @@
 - **模式**：这是一个 **Read** 表面（教程 / 说明），落在既有 Operate 世界的装订记录册里。按 new-work 的「既有世界中的新表面」处理：不换世界、不改 `DESIGN.md`、不做 concept-seed 摇号；本表面按既有的 code-led 路径构建，没有 comp。
 - **复用而非重画**：`styles.css` 的 `:root` 令牌、`.binding`、`.brand`、`.sections` 粘性导航、`.btn` / `.btn--onbind` / `.btn--copy`、`.skip`、`.colophon`、`:focus-visible`、深浅色、`reduced-motion` 全部直接继承；`mcp.css` 只加文档排版（事实带、两栏分工、文档表格、代码块、步骤列表）。没有新增颜色值、没有阴影、没有渐变、没有卡片网格、没有彩色左边框。
 - **状态徽标用装订色**：405 既不是积压（黄铜只属于待裁决），也不是可操作状态（绿色只表示可交互 / 已完成），所以徽标用页头的 `bind-rule` 边 + `bind-ink` 字 + 一个 `bind-ink-2` 小方块，写在页头而不是内容区。它陈述「预期行为」，不做红色告警。
-- **首屏即答案**：页头下第一屏就是「这个端点是什么」+ 三格事实带（传输 / 协议 / 方法），第三格直接给出 `Allow: POST`；随后是七个工具的表，再往下才是分工。信息顺序对应读者的三个问题：这是什么 → 为什么坏不了 → 怎么接。
+- **首屏即答案**：页头下第一屏就是「这个端点是什么」+ 三格事实带（传输 / 协议 / 方法），第三格直接给出 `Allow: POST`；随后是八个工具的表，再往下才是分工。信息顺序对应读者的三个问题：这是什么 → 为什么坏不了 → 怎么接。
 - **分区不编号**：DESIGN.md 明确禁止 kicker 与分区编号，因此章节用导航名（这个端点是什么 / 为什么是 405 / 30 秒验证 / 错误码 / 接下来），不写「01」「§1」。有序列表的编号只用于真正的步骤序列（initialize 顺序、接入顺序）。
 - **表格**：两个 `<table>` 都用 1px 细线 + 可见 `<caption>` + `scope="col"`，复用记录册的表格密度；窄屏（≤620px）表头视觉隐藏但保留给辅助技术，行转为单列堆叠，单元格按「状态码 → 含义 → 排查方向」顺序读。
 - **代码块**：卡片式边框在此只用于「粘贴的文稿」：`surface` 底 + 1px `rule-strong` 边 + 2px 圆角，头行是语言标签（12px、`ink-3`）+ 复制按钮（复用 `.btn--copy`），正文等宽 13px、`white-space: pre`、容器 `overflow-x: auto`；滚动容器 `role="region"` + `tabindex="0"` + `aria-labelledby`，键盘可聚焦并有 2px 焦点环。窄屏只让代码块内部横向滚动，页面本身不产生横向溢出。
@@ -76,7 +76,7 @@
 实测结论：
 
 - 三个宽度下 `document.documentElement.scrollWidth === innerWidth`（1280/768/375），页面无横向溢出；窄屏只有代码块内部出现横向滚动（375 下 3 个代码块、768 下 1 个长 JSON 行），符合「代码块可横向滚动」的要求。
-- 页面在 `/mcp` 上拿到 `status 405`、`allow: POST`、`content-type: text/html`；页面文本包含「HTTP 405 / 预期行为」、`/healthz` 与七个工具名；静态 HTML / CSS / JS 中没有 `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write`。
+- 页面在 `/mcp` 上拿到 `status 405`、`allow: POST`、`content-type: text/html`；页面文本包含「HTTP 405 / 预期行为」、`/healthz` 与八个工具名；静态 HTML / CSS / JS 中没有 `innerHTML` / `outerHTML` / `insertAdjacentHTML` / `document.write`。
 - 深浅色：`body` 背景/前景分别为 `rgb(242,243,237)` / `rgb(22,26,22)` 与 `rgb(19,22,17)` / `rgb(231,233,224)`，即 `paper` / `paper-dark` 与 `ink` / `ink-dark` 两套令牌。
 - 结构：`lang="zh-CN"`；标题顺序为 H1「Smriti MCP 接入教程」→ 五个 H2 → 五个 H3，没有跳级；无重复 `id`；页内 `#` 锚点全部能解析；2 个 `<caption>`、5 个 `th[scope="col"]`、4 个代码滚动区（`role="region"`）与 4 个复制反馈位（`role="status"`）、4 个复制按钮。
 - 键盘：Tab 顺序为「跳到主要内容 → 返回看板 → 五个章节链接 → 复制按钮 → 代码滚动区 → 下一个复制按钮…」；跳过链接与页头链接的焦点环分别为 `rgb(30,95,140)` 与 `rgb(231,214,162)`（装订上的黄铜焦点），代码滚动区为 2px 蓝色焦点环。

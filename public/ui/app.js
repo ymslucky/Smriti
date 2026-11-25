@@ -1,51 +1,39 @@
 'use strict';
 
 /**
- * Smriti 只读视图前端。
+ * Smriti 记忆工作台（只读）。
  *
- * 约束：
- * - 无框架、无外部依赖；
- * - 后端文本一律经 textContent 进入 DOM，本文件没有任何 innerHTML 赋值；
- * - 只读：这里没有写入、审批、删除请求。
+ * 数据：/v1/stats、/v1/topics、/v1/memories、/v1/pending、/v1/history、/v1/recall。
+ * 约束：后端文本一律经 textContent 进入 DOM；不提供任何写入、裁决、删除操作。
  */
 (function () {
+  var LIST_LIMIT = 500;
   var RECALL_LIMIT = 50;
-  var LIST_LIMIT = 200;
+  var HISTORY_LIMIT = 30;
   var KIND_LABELS = {
     conflict: '冲突',
     'possible-duplicate': '疑似重复',
     'new-topic': '新主题'
   };
-  var KIND_CLASSES = {
-    conflict: 'conflict',
-    'possible-duplicate': 'duplicate',
-    'new-topic': 'new'
-  };
-
-  /* ---------------------------------------------------------------- state */
 
   var state = {
+    stats: null,
     topics: [],
-    byTopic: [],
     topicLabels: new Map(),
     topicParents: new Map(),
     memories: [],
-    memoriesLoaded: false,
+    byId: new Map(),
     pending: [],
+    history: [],
     hits: [],
-    searchError: null,
     view: 'list',
     query: '',
     topic: '',
-    stats: null,
-    recentItems: [],
-    health: null,
-    healthCheck: 'unknown',
-    fetchedAt: null,
-    fatalError: null,
-    loading: false,
-    searching: false,
-    searchSeq: 0
+    selectedId: null,
+    searchSeq: 0,
+    searchError: null,
+    fatal: null,
+    fetchedAt: null
   };
 
   var dom = {};
@@ -83,9 +71,7 @@
       for (var i = 0; i < children.length; i += 1) {
         var child = children[i];
         if (child === null || child === undefined || child === false) continue;
-        node.appendChild(
-          typeof child === 'string' ? document.createTextNode(child) : child
-        );
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
       }
     }
     return node;
@@ -113,7 +99,6 @@
     return value < 10 ? '0' + value : String(value);
   }
 
-  /** 稳定的本地时间显示：YYYY-MM-DD HH:mm。 */
   function formatTime(value) {
     var date = toDate(value);
     if (!date) return '—';
@@ -136,42 +121,7 @@
     return pad(date.getHours()) + ':' + pad(date.getMinutes());
   }
 
-  function formatConfidence(value) {
-    var number = typeof value === 'number' ? value : Number(value);
-    if (!isFinite(number)) return '—';
-    return number.toFixed(2);
-  }
-
-  function timeEl(value, className) {
-    var date = toDate(value);
-    var attrs = {};
-    if (date) attrs.datetime = value;
-    return el('time', {
-      class: className || '',
-      text: date ? formatTime(value) : '—',
-      attrs: attrs
-    });
-  }
-
-  function announce(message) {
-    if (!dom.live) return;
-    dom.live.textContent = message;
-  }
-
-  function setBusy(node, busy) {
-    if (!node) return;
-    node.setAttribute('aria-busy', busy ? 'true' : 'false');
-  }
-
-  function flagEnter(node) {
-    if (!node) return;
-    node.classList.remove('is-enter');
-    /* 强制一次重排，让重复刷新也能重放这段 180ms 的入场。 */
-    void node.offsetWidth;
-    node.classList.add('is-enter');
-  }
-
-  function labelFor(topic) {
+  function labelPath(topic) {
     var key = text(topic);
     if (!key) return '—';
     var path = [];
@@ -186,14 +136,6 @@
     return state.topicLabels.get(key) || key;
   }
 
-  /** 登记一个主题的标签与父主题；统计接口与词表接口都会调用。 */
-  function rememberTopic(item) {
-    if (!item || !item.topic) return;
-    if (item.label) state.topicLabels.set(item.topic, item.label);
-    state.topicParents.set(item.topic, item.parent || null);
-  }
-
-  /** 主题是否落在 scope 子树内；scope 为空表示不过滤。 */
   function isWithinTopic(topic, scope) {
     var value = text(topic);
     var root = text(scope);
@@ -203,10 +145,9 @@
 
   /* ---------------------------------------------------------------- fetch */
 
-  function HttpError(kind, detail, status) {
+  function HttpError(kind, status) {
     this.name = 'HttpError';
     this.kind = kind;
-    this.detail = detail || '';
     this.status = status || 0;
     this.message = kind + (status ? ' ' + status : '');
   }
@@ -225,92 +166,53 @@
     }
     return fetch(path, init).then(
       function (response) {
-        if (response.status === 401) return Promise.reject(new HttpError('auth', '', 401));
-        if (response.status === 403) return Promise.reject(new HttpError('forbidden', '', 403));
-        if (!response.ok) return Promise.reject(new HttpError('http', '', response.status));
+        if (response.status === 401 || response.status === 403) {
+          throw new HttpError('auth', response.status);
+        }
+        if (!response.ok) {
+          return response.text().then(function () {
+            throw new HttpError('http', response.status);
+          });
+        }
         return response.json().catch(function () {
-          return Promise.reject(new HttpError('parse', '', response.status));
+          throw new HttpError('json', response.status);
         });
       },
       function () {
-        return Promise.reject(new HttpError('network', '', 0));
+        throw new HttpError('network', 0);
       }
     );
   }
 
   function describeError(error) {
-    var kind = error && error.kind;
-    if (kind === 'auth') {
-      return {
-        title: '需要 Cloudflare Access 鉴权',
-        hint: '刷新页面重新登录，或确认 Access 策略覆盖当前身份。',
-        body: '这个页面在 Access 之后，同源 cookie 没有通过校验。刷新页面重新登录；若用 service token 访问，确认 Access 策略覆盖了当前身份。'
-      };
-    }
-    if (kind === 'forbidden') {
-      return {
-        title: '没有访问权限（HTTP 403）',
-        hint: '确认 Access 策略包含当前身份。',
-        body: 'Cloudflare Access 返回 403：当前身份的 Access 策略没有覆盖这个应用。请重新登录，或让策略包含你的邮箱。'
-      };
-    }
-    if (kind === 'network') {
-      return {
-        title: '网关不可达',
-        hint: '检查网络，或确认 Worker 已部署、Access 应用在线。',
-        body: '请求没有到达 Worker。检查网络，或确认 smriti 的子域已部署、Access 应用在线；本地开发请确认 wrangler dev 仍在运行。'
-      };
-    }
-    if (kind === 'http') {
-      return {
-        title: '网关返回了错误（HTTP ' + (error.status || '?') + '）',
-        hint: '服务端错误，稍后重试；持续出现请看 Worker 日志。',
-        body: '这是服务端错误，稍后重试；如果持续出现，查看 Worker 日志与 R2 绑定。'
-      };
-    }
-    if (kind === 'parse') {
-      return {
-        title: '响应不是有效的 JSON',
-        hint: '返回体可能被登录页或代理错误页替换。',
-        body: '返回体可能来自 Access 登录页或代理错误页，而不是 Worker 的 JSON 响应。刷新页面重试一次。'
-      };
-    }
-    return {
-      title: '读取失败',
-      hint: '重试一次；持续出现请看浏览器控制台与 Worker 日志。',
-      body: '发生了未知错误，重试一次；如果持续出现，查看浏览器控制台与 Worker 日志。'
-    };
+    if (error && error.kind === 'auth') return '需要 Cloudflare Access 登录，或 Access 策略未覆盖当前身份。';
+    if (error && error.kind === 'network') return '网关不可达，检查网络或部署状态。';
+    if (error && error.kind === 'json') return '网关返回了无法解析的响应。';
+    if (error && error.kind === 'http') return '网关返回了错误（HTTP ' + error.status + '）。';
+    return '读取失败。';
   }
 
-  /* 这三种失败是整页级的：页面顶部横幅统一说明，各区块只留一行指过去。 */
-  var GATE_KINDS = { auth: true, forbidden: true, network: true };
-
-  function isGateError(error) {
-    return !!(error && GATE_KINDS[error.kind]);
+  function announce(message) {
+    if (dom.live) dom.live.textContent = message;
   }
 
-  function noteFatal(error) {
-    if (!error) return;
-    if (isGateError(error) && !state.fatalError) state.fatalError = error;
+  function showBanner(message) {
+    dom.banner.hidden = false;
+    dom.banner.textContent = message;
   }
 
-  /* ---------------------------------------------------------- state views */
+  function hideBanner() {
+    dom.banner.hidden = true;
+    dom.banner.textContent = '';
+  }
 
   function showState(container, options) {
-    if (!container) return;
-    var children = [
-      el('p', {
-        class:
-          'state__title' + (options.tone === 'error' ? ' is-error' : ''),
-        text: options.title
-      })
-    ];
-    if (options.body) {
-      children.push(el('p', { class: 'state__body', text: options.body }));
-    }
+    container.replaceChildren();
+    var children = [el('p', { class: 'state__title', text: options.title })];
+    if (options.body) children.push(el('p', { class: 'state__body', text: options.body }));
     if (options.actionLabel && typeof options.onAction === 'function') {
       children.push(
-        el('div', { class: 'state__actions' }, [
+        el('div', { class: 'state__action' }, [
           el('button', {
             class: 'btn',
             type: 'button',
@@ -320,472 +222,166 @@
         ])
       );
     }
-    container.replaceChildren(
-      el(
-        'div',
-        {
-          class: 'state',
-          attrs: options.tone === 'error' ? { role: 'alert' } : null
-        },
-        children
-      )
-    );
+    container.appendChild(el('div', { class: 'state' }, children));
     container.hidden = false;
   }
 
-  function hideState(container) {
-    if (!container) return;
+  function clearState(container) {
     container.replaceChildren();
     container.hidden = true;
   }
 
-  /** 区块级错误：一行说明问题与恢复路径，不重复整页横幅的正文。 */
-  function sectionError(container, title, hint, retry) {
-    if (!container) return;
-    var children = [
-      el('span', { class: 'inline-error__mark', attrs: { 'aria-hidden': 'true' } }),
-      el('span', { class: 'inline-error__text' }, [
-        el('strong', { class: 'inline-error__title', text: title }),
-        el('span', { class: 'inline-error__body', text: hint })
-      ])
-    ];
-    if (typeof retry === 'function') {
-      children.push(
-        el('button', {
-          class: 'btn btn--small',
-          type: 'button',
-          text: '重试',
-          onclick: retry
-        })
-      );
-    }
-    container.replaceChildren(
-      el('div', { class: 'inline-error', attrs: { role: 'alert' } }, children)
-    );
-    container.hidden = false;
+  /* ----------------------------------------------------------------- data */
+
+  function rememberTopic(item) {
+    if (!item || !item.topic) return;
+    if (item.label) state.topicLabels.set(item.topic, item.label);
+    state.topicParents.set(item.topic, item.parent || null);
   }
-
-  function sectionErrorFrom(container, error, retry) {
-    var info = describeError(error);
-    if (isGateError(error)) {
-      sectionError(container, '读取失败', '原因见页面顶部提示。', null);
-      return;
-    }
-    sectionError(container, info.title, info.hint, retry);
-  }
-
-  function showGate(error) {
-    if (!error) {
-      dom.gate.hidden = true;
-      return;
-    }
-    var info = describeError(error);
-    dom.gateTitle.textContent = info.title;
-    dom.gateBody.textContent = info.body;
-    dom.gate.hidden = false;
-  }
-
-  /* ------------------------------------------------------------ nav counts */
-
-  function setNavCount(name, value, alertWhenPositive) {
-    var node = document.querySelector('[data-count="' + name + '"]');
-    if (!node) return;
-    var hasValue = value !== null && value !== undefined && isFinite(Number(value));
-    node.textContent = hasValue ? formatCount(Number(value)) : '';
-    if (alertWhenPositive) {
-      node.classList.toggle('is-alert', hasValue && Number(value) > 0);
-    }
-  }
-
-  /* ---------------------------------------------------------------- stats */
 
   function loadStats() {
-    setBusy(dom.totals, true);
-    return request('/v1/stats').then(
-      function (data) {
-        var payload = data || {};
-        var totals = payload.totals || {};
-        var health = payload.health || {};
-        var recent = Array.isArray(payload.recent) ? payload.recent : [];
-
-        state.health = health;
-        state.stats = payload;
-        state.recentItems = recent;
-        state.byTopic = Array.isArray(payload.byTopic) ? payload.byTopic : [];
-
-        /* 先登记标签，再渲染：否则最近更新会先拿到原始 topic 标识。 */
-        state.byTopic.forEach(rememberTopic);
-
-        renderTotals(totals, health);
-        renderRecent(recent);
-
-        setNavCount('memories', totals.memories, false);
-        setNavCount('pending', totals.pending, true);
-        setNavCount('topics', totals.topics, false);
-
-        setBusy(dom.totals, false);
-      },
-      function (error) {
-        noteFatal(error);
-        state.stats = null;
-        state.recentItems = [];
-        dom.statMemories.textContent = '—';
-        dom.statPending.textContent = '—';
-        dom.statTopics.textContent = '—';
-        dom.statSearch.textContent = '—';
-        dom.statSearch.className = 'totals__num totals__num--text';
-        dom.recent.hidden = true;
-        setBusy(dom.recent, false);
-        sectionErrorFrom(dom.recentState, error, refreshAll);
-        setBusy(dom.totals, false);
-        throw error;
-      }
-    );
-  }
-
-  function renderTotals(totals, health) {
-    dom.statMemories.textContent = formatCount(totals.memories);
-    dom.statPending.textContent = formatCount(totals.pending);
-    dom.statTopics.textContent = formatCount(totals.topics);
-    dom.statPendingNote.textContent =
-      Number(totals.pending) > 0 ? '在 dsh 里裁决' : '没有积压';
-    dom.statPendingNote.className = 'totals__note';
-
-    var ready = health.aiSearch === true;
-    dom.statSearch.textContent = ready ? '就绪' : '未就绪';
-    dom.statSearch.className =
-      'totals__num totals__num--text ' + (ready ? 'is-ok' : 'is-warn');
-    // 统计带的说明保持一行短语；具体原因放在下方运行状态的「检索」行，避免长文本撑坏版面。
-    dom.statSearchNote.textContent = ready ? '语义检索可用' : '检索降级为列表';
-  }
-
-  function renderRecent(items) {
-    dom.recent.replaceChildren();
-    if (!items.length) {
-      dom.recent.hidden = true;
-      showState(dom.recentState, {
-        title: '还没有记忆',
-        body: 'dsh 通过 memory_upsert 写入偏好；第一条写进来之后，最近更新会出现在这里。'
-      });
-      return;
-    }
-    dom.recent.hidden = false;
-    hideState(dom.recentState);
-
-    var fragment = document.createDocumentFragment();
-    items.slice(0, 5).forEach(function (item) {
-      fragment.appendChild(
-        el('li', { class: 'recent__row' }, [
-          timeEl(item.updatedAt, 'recent__time'),
-          el('span', { class: 'recent__topic', text: labelFor(item.topic) }),
-          el('span', {
-            class: 'recent__text',
-            text: text(item.statement) || '（这条记录没有陈述）'
-          })
-        ])
-      );
+    return request('/v1/stats').then(function (payload) {
+      state.stats = payload || {};
+      if (Array.isArray(state.stats.byTopic)) state.stats.byTopic.forEach(rememberTopic);
+      renderStats();
     });
-    dom.recent.appendChild(fragment);
-    setBusy(dom.recent, false);
-    flagEnter(dom.recent);
   }
-
-  /* --------------------------------------------------------------- health */
-
-  function loadHealth() {
-    return request('/v1/health').then(
-      function () {
-        state.healthCheck = 'ok';
-        return null;
-      },
-      function (error) {
-        state.healthCheck = 'fail';
-        return null;
-      }
-    );
-  }
-
-  function renderStatus() {
-    var health = state.health || {};
-    var rows = [];
-
-    rows.push({
-      label: '健康检查',
-      values: [
-        {
-          text:
-            state.healthCheck === 'ok'
-              ? '通过'
-              : state.healthCheck === 'fail'
-                ? '未通过'
-                : '未知',
-          className:
-            state.healthCheck === 'ok'
-              ? 'is-ok'
-              : state.healthCheck === 'fail'
-                ? 'is-bad'
-                : ''
-        }
-      ]
-    });
-
-    rows.push({
-      label: '实例',
-      values: [
-        {
-          text: text(health.instance) || '—',
-          className: ''
-        }
-      ]
-    });
-
-    rows.push({
-      label: '鉴权',
-      values: [{ text: authModeLabel(health.authMode), className: '' }]
-    });
-
-    // 检索后端不健康时把原因摆到台面上：以前只显示"未就绪"，没人知道是实例没了。
-    if (health.aiSearch === false && text(health.searchError)) {
-      rows.push({
-        label: '检索',
-        values: [{ text: text(health.searchError), className: 'is-bad' }]
-      });
-    }
-
-    rows.push({
-      label: '数据获取',
-      values: [
-        {
-          text: state.fetchedAt ? formatTime(state.fetchedAt) : '—',
-          className: ''
-        }
-      ]
-    });
-
-    dom.status.replaceChildren();
-    rows.forEach(function (row) {
-      dom.status.appendChild(
-        el('div', { class: 'status__row' }, [
-          el('dt', { text: row.label }),
-          el('dd', null, row.values.map(function (value) {
-            return el('span', { class: value.className, text: value.text });
-          }))
-        ])
-      );
-    });
-    setBusy(dom.status, false);
-  }
-
-  function authModeLabel(mode) {
-    var value = text(mode).toLowerCase();
-    if (!value) return '—';
-    if (value === 'access') return 'Cloudflare Access';
-    if (value === 'dev') return 'dev（跳过 Access）';
-    return text(mode);
-  }
-
-  /* --------------------------------------------------------------- topics */
 
   function loadTopics() {
-    setBusy(dom.topicList, true);
-    return request('/v1/topics').then(
-      function (data) {
-        var list = data && Array.isArray(data.topics) ? data.topics : [];
-        state.topics = list;
-        list.forEach(rememberTopic);
-        renderTopics(list);
-        renderTopicFilter(list);
-        setBusy(dom.topicList, false);
-      },
-      function (error) {
-        noteFatal(error);
-        dom.topicsMeta.textContent = '读取失败';
-        dom.topicList.hidden = true;
-        sectionErrorFrom(dom.topicState, error, refreshAll);
-        setBusy(dom.topicList, false);
-        throw error;
-      }
-    );
+    return request('/v1/topics').then(function (payload) {
+      state.topics = payload && Array.isArray(payload.topics) ? payload.topics : [];
+      state.topics.forEach(rememberTopic);
+      renderTree();
+      renderTable();
+    });
   }
 
-  function renderTopics(list) {
-    dom.topicList.replaceChildren();
-    if (!list.length) {
-      dom.topicList.hidden = true;
-      dom.topicsMeta.textContent = '没有主题';
-      showState(dom.topicState, {
-        title: '还没有主题',
-        body: '主题由 AI 在写入时创建：memory_upsert 首次使用的 topic 会自动成为主题，点分表示层级。'
+  function loadMemories() {
+    return request('/v1/memories?limit=' + LIST_LIMIT).then(function (payload) {
+      state.memories = payload && Array.isArray(payload.items) ? payload.items : [];
+      state.byId = new Map();
+      state.memories.forEach(function (item) {
+        if (item && item.id) state.byId.set(item.id, item);
       });
-      return;
+      renderTable();
+      renderDetail();
+    });
+  }
+
+  function loadPending() {
+    return request('/v1/pending').then(function (payload) {
+      state.pending = payload && Array.isArray(payload.pending) ? payload.pending : [];
+      renderPending();
+    });
+  }
+
+  function loadHistory() {
+    return request('/v1/history?limit=' + HISTORY_LIMIT).then(function (payload) {
+      state.history = payload && Array.isArray(payload.items) ? payload.items : [];
+      renderHistory();
+    });
+  }
+
+  function loadAll() {
+    hideBanner();
+    state.fatal = null;
+    return Promise.all([
+      loadStats().catch(noteFatal),
+      loadTopics().catch(noteFatal),
+      loadMemories().catch(noteFatal),
+      loadPending().catch(noteFatal),
+      loadHistory().catch(noteFatal)
+    ]).then(function () {
+      state.fetchedAt = new Date().toISOString();
+      dom.fetchedAt.textContent = formatClock(state.fetchedAt) + ' 更新';
+      dom.stats.setAttribute('aria-busy', 'false');
+      renderTable();
+      announce('已刷新');
+    });
+  }
+
+  function noteFatal(error) {
+    state.fatal = error;
+    if (error && error.kind === 'auth') {
+      showBanner('需要 Cloudflare Access 登录：刷新页面重新登录，或确认 Access 策略覆盖当前身份。');
+    } else {
+      showBanner(describeError(error));
     }
-    dom.topicList.hidden = false;
-    hideState(dom.topicState);
+  }
 
-    var roots = list.filter(function (item) {
-      return item && !item.parent;
-    });
-    var children = list.filter(function (item) {
-      return item && item.parent;
-    });
-    var ordered = [];
-    roots.forEach(function (root) {
-      ordered.push({ item: root, isChild: false });
-      children.forEach(function (child) {
-        if (child.parent === root.topic) ordered.push({ item: child, isChild: true });
-      });
-    });
-    /* 父项缺失的细分主题兜底追加，避免词表局部损坏时整行消失。 */
-    children.forEach(function (child) {
-      var hasParent = roots.some(function (root) {
-        return root.topic === child.parent;
-      });
-      if (!hasParent) ordered.push({ item: child, isChild: true });
-    });
+  /* --------------------------------------------------------------- render */
 
-    var total = 0;
-    var max = 1;
-    ordered.forEach(function (entry) {
-      var item = entry.item;
-      var own = Number(item.directCount != null ? item.directCount : item.count) || 0;
-      var count = Number(item.count) || 0;
-      total += own;
-      if (count > max) max = count;
+  function renderStats() {
+    var totals = (state.stats && state.stats.totals) || {};
+    var health = (state.stats && state.stats.health) || {};
+    dom.statMemories.textContent = formatCount(totals.memories);
+    dom.statTopics.textContent = formatCount(totals.topics);
+    dom.statPending.textContent = formatCount(totals.pending);
+    dom.statSearch.textContent = health.aiSearch === true ? '就绪' : '未就绪';
+    dom.statSearch.className = 'is-text' + (health.aiSearch === true ? '' : ' is-warn');
+    dom.statPending.className = Number(totals.pending) > 0 ? 'is-warn' : '';
+    // 主题接口还没回来时先用统计里的标签兜底。
+    if (dom.treeAll) {
+      dom.treeAll.setAttribute('aria-pressed', state.topic === '' ? 'true' : 'false');
+    }
+  }
+
+  function renderTree() {
+    var list = state.topics;
+    dom.tree.replaceChildren();
+    dom.topicsMeta.textContent = list.length
+      ? list.length + ' 个主题'
+      : '还没有主题';
+    dom.treeAll.setAttribute('aria-pressed', state.topic === '' ? 'true' : 'false');
+
+    var known = new Set(
+      list.map(function (item) {
+        return item.topic;
+      })
+    );
+    // 词表按字典序返回，子主题紧跟在父主题之后；父主题不存在时按根行展示，避免"孤儿缩进"。
+    var ordered = list.map(function (item) {
+      return {
+        item: item,
+        child: Boolean(item.parent) && known.has(item.parent)
+      };
     });
-    dom.topicsMeta.textContent =
-      list.length + ' 个主题 · 共 ' + formatCount(total) + ' 条记忆';
 
     var fragment = document.createDocumentFragment();
     ordered.forEach(function (entry) {
       var item = entry.item;
-      var count = Number(item && item.count) || 0;
       var label = text(item.label) || text(item.topic);
       fragment.appendChild(
-        el('li', { class: 'shelf__row' + (entry.isChild ? ' shelf__row--child' : '') }, [
-          el('span', { class: 'shelf__name' }, [
-            el('span', { class: 'shelf__label', text: label }),
-            el('span', { class: 'shelf__id', text: text(item.topic) })
-          ]),
-          el('span', {
-            class: 'shelf__desc',
-            text: text(item.description) || '（这个词表项没有说明）'
-          }),
-          el('span', { class: 'shelf__meter' }, [
-            el('progress', {
-              class: 'meter',
-              value: count,
-              max: max,
-              attrs: {
-                'aria-label': label + '：' + formatCount(count) + ' 条记忆'
-              }
-            })
-          ]),
-          el('span', { class: 'shelf__count', text: formatCount(count) })
+        el('li', null, [
+          el('button', {
+            class: 'tree__row' + (entry.child ? ' tree__row--child' : ''),
+            type: 'button',
+            attrs: {
+              'aria-pressed': state.topic === item.topic ? 'true' : 'false',
+              title: item.topic
+            },
+            onclick: function () {
+              setTopic(item.topic);
+            }
+          }, [
+            el('span', { class: 'tree__label', text: label }),
+            el('span', { class: 'tree__count', text: formatCount(item.count) })
+          ])
         ])
       );
     });
-    dom.topicList.appendChild(fragment);
-    flagEnter(dom.topicList);
+    dom.tree.appendChild(fragment);
+    dom.tree.setAttribute('aria-busy', 'false');
   }
 
-  function renderTopicFilter(list) {
-    var current = dom.topicFilter.value;
-    var roots = list.filter(function (item) {
-      return item && !item.parent;
-    });
-    var children = list.filter(function (item) {
-      return item && item.parent;
-    });
-    dom.topicFilter.replaceChildren(
-      el('option', { value: '', text: '全部主题' })
-    );
-    roots.forEach(function (root) {
-      var group = document.createElement('optgroup');
-      group.label = text(root.label) || text(root.topic);
-      /* 只放标签，不放计数：检索模式下计数会与命中数混淆，计数归「主题」区块。 */
-      group.appendChild(
-        el('option', {
-          value: text(root.topic),
-          text: text(root.label) || text(root.topic)
-        })
-      );
-      children.forEach(function (child) {
-        if (child.parent !== root.topic) return;
-        group.appendChild(
-          el('option', {
-            value: text(child.topic),
-            text: text(child.label) || text(child.topic)
-          })
-        );
-      });
-      dom.topicFilter.appendChild(group);
-    });
-    /* 父主题不在返回列表里（父层没有记录）的细分主题，退化为平级选项，保证可筛选。 */
-    children.forEach(function (child) {
-      var known = roots.some(function (root) {
-        return root.topic === child.parent;
-      });
-      if (known) return;
-      dom.topicFilter.appendChild(
-        el('option', {
-          value: text(child.topic),
-          text: text(child.label) || text(child.topic)
-        })
-      );
-    });
-    dom.topicFilter.value = current;
-    state.topic = dom.topicFilter.value;
-  }
-
-  /* ------------------------------------------------------------- memories */
-
-  function loadMemories() {
-    setBusy(dom.memoryBody, true);
-    return request('/v1/memories?limit=' + LIST_LIMIT).then(
-      function (data) {
-        state.memories = data && Array.isArray(data.items) ? data.items : [];
-        state.memoriesLoaded = true;
-        if (state.view === 'search') {
-          state.hits = hydrateHits(state.hits);
-        }
-        renderMemories();
-        setBusy(dom.memoryBody, false);
-      },
-      function (error) {
-        noteFatal(error);
-        state.memoriesLoaded = false;
-        state.searchError = null;
-        dom.records.hidden = true;
-        dom.memoriesMeta.textContent = '读取失败';
-        sectionErrorFrom(dom.memoryState, error, refreshAll);
-        setBusy(dom.memoryBody, false);
-        throw error;
-      }
-    );
-  }
-
-  function hydrateHits(hits) {
-    var index = new Map();
-    state.memories.forEach(function (item) {
-      if (item && item.id) index.set(item.id, item);
-    });
-    return hits.map(function (hit) {
-      var full = index.get(hit.id);
-      if (!full) {
-        return {
-          id: hit.id,
-          topic: hit.topic,
-          statement: hit.statement
-        };
-      }
-      return {
-        id: hit.id,
-        topic: hit.topic || full.topic,
-        statement: text(hit.statement) || full.statement,
-        version: full.version,
-        updatedAt: full.updatedAt
-      };
-    });
+  function setTopic(topic) {
+    state.topic = topic === state.topic ? '' : topic;
+    state.hits = [];
+    state.view = 'list';
+    if (dom.q.value) dom.q.value = '';
+    renderTree();
+    renderTable();
+    announce(state.topic ? '已筛选主题：' + labelPath(state.topic) : '已显示全部主题');
   }
 
   function visibleRows() {
@@ -793,7 +389,6 @@
     var filtered = rows.filter(function (item) {
       return item && isWithinTopic(item.topic, state.topic);
     });
-    // 列表按更新时间倒序；检索结果没有时间戳，保持相关度顺序。
     return filtered.slice().sort(function (left, right) {
       var a = toDate(left.updatedAt);
       var b = toDate(right.updatedAt);
@@ -801,558 +396,320 @@
     });
   }
 
-  function renderMemories() {
-    var all = state.view === 'search' ? state.hits : state.memories;
+  function renderTable() {
     var rows = visibleRows();
-    var topicLabel = state.topic ? labelFor(state.topic) : '';
 
-    dom.searchClear.hidden = state.view !== 'search';
-    dom.searchMode.className =
-      'mode-line' + (state.view === 'search' ? ' is-search' : '');
-    dom.searchMode.textContent =
-      state.view === 'search'
-        ? '语义检索 · 来自 AI Search，按相关度排列'
-        : '列表模式 · 按更新时间排列，最多 ' + LIST_LIMIT + ' 条';
-
-    if (state.view === 'search' && state.searchError) {
-      var info = describeError(state.searchError);
-      dom.records.hidden = true;
-      dom.memoriesMeta.textContent = '语义检索失败';
-      sectionError(
-        dom.memoryState,
-        info.title,
-        '语义检索请求失败；AI Search 未就绪时 /v1/recall 可能不可用，也可以清除搜索改用列表浏览。',
-        function () {
-          runSearch(state.query);
-        }
-      );
-      return;
+    // 当前选中的记录被筛掉时收起详情，避免右侧显示不在列表里的条目。
+    if (
+      state.selectedId &&
+      !rows.some(function (item) {
+        return item.id === state.selectedId;
+      })
+    ) {
+      state.selectedId = null;
+      renderDetail();
     }
+
+    dom.recordCount.textContent = formatCount(rows.length) + ' 条';
+    dom.memoriesMeta.textContent =
+      (state.view === 'search' ? '语义检索「' + state.query + '」' : '按更新时间倒序') +
+      (state.topic ? ' · 主题「' + labelPath(state.topic) + '」' : '');
 
     if (!rows.length) {
       dom.records.hidden = true;
-      if (state.view === 'search') {
-        if (all.length) {
-          dom.memoriesMeta.textContent =
-            '语义检索「' + state.query + '」· 命中 ' + formatCount(all.length) + ' 条 · 当前筛选 0 条';
-          showState(dom.memoryState, {
-            title: '「' + topicLabel + '」没有命中的记忆',
-            body:
-              '检索命中 ' +
-              formatCount(all.length) +
-              ' 条，都不在「' +
-              topicLabel +
-              '」下。清除主题筛选可以看到全部命中。',
-            actionLabel: '清除主题筛选',
-            onAction: clearTopic
-          });
-        } else {
-          dom.memoriesMeta.textContent = '语义检索「' + state.query + '」· 0 条';
-          showState(dom.memoryState, {
-            title: '没有命中的记忆',
-            body: 'AI Search 是语义检索，不必与原文逐字一致；换一种说法通常有效，也可以清除搜索回到完整列表。',
-            actionLabel: '清除搜索',
-            onAction: clearSearch
-          });
-        }
-      } else if (!all.length) {
-        dom.memoriesMeta.textContent = '共 0 条';
-        showState(dom.memoryState, {
-          title: '还没有记忆',
-          body: 'dsh 通过 memory_upsert 写入偏好；第一条写入后，这里会出现带版本号的记录。'
-        });
-      } else {
-        dom.memoriesMeta.textContent =
-          '共 ' + formatCount(all.length) + ' 条 · 当前筛选 0 条';
-        showState(dom.memoryState, {
-          title: '「' + topicLabel + '」还没有记忆',
-          body: '换一个主题，或清除主题筛选回到全部 ' + formatCount(all.length) + ' 条。',
-          actionLabel: '清除主题筛选',
-          onAction: clearTopic
-        });
-      }
+      showState(dom.memoriesState, {
+        title: state.view === 'search' ? '没有命中的记忆' : '没有记忆',
+        body:
+          state.view === 'search'
+            ? '换一种说法，或清除检索回到完整列表。'
+            : state.topic
+              ? '这个主题下还没有记忆。清除主题筛选可以看全部。'
+              : 'dsh 通过 memory_upsert 写入偏好；第一条写入后会出现在这里。',
+        actionLabel: state.topic || state.view === 'search' ? '清除筛选' : undefined,
+        onAction: clearFilters
+      });
       return;
     }
 
+    clearState(dom.memoriesState);
     dom.records.hidden = false;
-    hideState(dom.memoryState);
-
-    if (state.view === 'search') {
-      dom.memoriesMeta.textContent =
-        '语义检索「' +
-        state.query +
-        '」· 命中 ' +
-        formatCount(rows.length) +
-        ' 条' +
-        (state.topic ? '（已按「' + topicLabel + '」筛选）' : '');
-    } else if (state.topic) {
-      dom.memoriesMeta.textContent =
-        '共 ' + formatCount(all.length) + ' 条 · 主题「' + topicLabel + '」' + formatCount(rows.length) + ' 条';
-    } else {
-      dom.memoriesMeta.textContent = '共 ' + formatCount(rows.length) + ' 条';
-    }
-
     var fragment = document.createDocumentFragment();
     rows.forEach(function (item) {
+      var selected = item.id === state.selectedId;
       fragment.appendChild(
-        el('tr', null, [
-          el('td', { class: 'cell-topic', text: labelFor(item.topic) }),
-          el('td', {
-            class: 'cell-statement',
-            text: text(item.statement) || '（这条记录没有陈述）'
-          }),
-          el('td', {
-            class: 'cell-version',
-            text:
-              typeof item.version === 'number' && item.version > 0
-                ? 'v' + item.version
-                : '—'
-          }),
-          el('td', { class: 'cell-time' }, [timeEl(item.updatedAt)])
+        el('tr', {
+          attrs: {
+            tabindex: '0',
+            'aria-selected': selected ? 'true' : 'false',
+            'data-id': item.id
+          },
+          onclick: function () {
+            selectRecord(item.id);
+          },
+          onkeydown: function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              selectRecord(item.id);
+            }
+          }
+        }, [
+          el('td', { class: 'cell-topic', attrs: { 'data-label': '主题' } }, [
+            el('span', { text: labelPath(item.topic) }),
+            el('small', { text: text(item.topic) })
+          ]),
+          el('td', { class: 'cell-statement', text: text(item.statement) || '（这条记录没有陈述）', attrs: { 'data-label': '陈述' } }),
+          el('td', { class: 'cell-version', text: typeof item.version === 'number' ? 'v' + item.version : '—', attrs: { 'data-label': '版本' } }),
+          el('td', { class: 'cell-time', text: formatTime(item.updatedAt), attrs: { 'data-label': '更新时间' } })
         ])
       );
     });
-    dom.memoryBody.replaceChildren(fragment);
-    flagEnter(dom.memoryBody);
+    dom.recordsBody.replaceChildren(fragment);
   }
 
-  function clearTopic() {
-    state.topic = '';
-    dom.topicFilter.value = '';
-    renderMemories();
-    announce('已清除主题筛选');
+  function selectRecord(id) {
+    state.selectedId = id;
+    renderTable();
+    renderDetail();
+    announce('已选择记忆 ' + id);
   }
 
-  function clearSearch() {
+  function renderDetail() {
+    dom.detail.replaceChildren();
+    dom.detail.appendChild(el('h2', { class: 'inspector__title', text: '详情' }));
+
+    var record = state.selectedId ? state.byId.get(state.selectedId) : null;
+    if (!record) {
+      dom.detail.appendChild(
+        el('p', { class: 'detail__empty', text: '选择左侧任意一条记忆，查看理由、版本与时间。' })
+      );
+      return;
+    }
+
+    dom.detail.appendChild(el('p', { class: 'detail__topic', text: labelPath(record.topic) }));
+    dom.detail.appendChild(el('p', { class: 'detail__id', text: record.topic + ' / ' + record.id }));
+    dom.detail.appendChild(el('p', { class: 'detail__statement', text: text(record.statement) }));
+    if (text(record.rationale)) {
+      dom.detail.appendChild(el('p', { class: 'detail__rationale', text: text(record.rationale) }));
+    }
+
+    var rows = [
+      ['版本', 'v' + (record.version || 1)],
+      ['生效', formatTime(record.validFrom || record.createdAt)],
+      ['更新', formatTime(record.updatedAt)],
+      ['置信度', typeof record.confidence === 'number' ? record.confidence.toFixed(2) : '—']
+    ];
+    if (record.supersedes) rows.push(['取代', record.supersedes]);
+    if (record.source && record.source.session) rows.push(['来源', 'session ' + record.source.session]);
+
+    var dl = el('dl', { class: 'detail__grid' });
+    rows.forEach(function (row) {
+      dl.appendChild(el('dt', { text: row[0] }));
+      dl.appendChild(el('dd', { text: row[1] }));
+    });
+    dom.detail.appendChild(dl);
+  }
+
+  function renderHistory() {
+    dom.historyCount.textContent = formatCount(state.history.length) + ' 条';
+    dom.history.replaceChildren();
+    if (!state.history.length) {
+      showState(dom.historyState, {
+        title: '没有历史',
+        body: '被取代或删除的版本会出现在这里，保留 30 天。'
+      });
+      dom.history.hidden = true;
+      return;
+    }
+    clearState(dom.historyState);
+    dom.history.hidden = false;
+    var fragment = document.createDocumentFragment();
+    state.history.forEach(function (item) {
+      fragment.appendChild(
+        el('li', { class: 'timeline__row' }, [
+          el('div', { class: 'timeline__meta' }, [
+            el('span', { text: labelPath(item.topic) }),
+            el('span', { text: item.validTo ? formatTime(item.validTo) : '—' })
+          ]),
+          el('p', { class: 'timeline__text', text: text(item.statement) || '（没有陈述）' }),
+          item.archiveReason
+            ? el('p', { class: 'timeline__reason', text: text(item.archiveReason) })
+            : null
+        ])
+      );
+    });
+    dom.history.appendChild(fragment);
+  }
+
+  function renderPending() {
+    dom.pendingCount.textContent = formatCount(state.pending.length) + ' 条';
+    dom.pending.replaceChildren();
+    if (!state.pending.length) {
+      showState(dom.pendingState, {
+        title: '没有待裁决',
+        body: '冲突由调用方模型用 memory_resolve 自动处理，处理完就会消失。'
+      });
+      dom.pending.hidden = true;
+      return;
+    }
+    clearState(dom.pendingState);
+    dom.pending.hidden = false;
+    var fragment = document.createDocumentFragment();
+    state.pending.forEach(function (change) {
+      var current = change.current ? change.current.statement : '（无现行记录）';
+      fragment.appendChild(
+        el('li', { class: 'pending__row' }, [
+          el('span', { class: 'pending__kind', text: KIND_LABELS[change.kind] || change.kind }),
+          el('p', { class: 'pending__pair', text: current + ' → ' + change.proposed.statement }),
+          el('p', { class: 'pending__id', text: change.changeId })
+        ])
+      );
+    });
+    dom.pending.appendChild(fragment);
+  }
+
+  /* --------------------------------------------------------------- search */
+
+  function runSearch(query) {
+    var trimmed = text(query);
+    if (!trimmed) {
+      clearFilters();
+      return;
+    }
+    var seq = state.searchSeq + 1;
+    state.searchSeq = seq;
+    state.view = 'search';
+    state.query = trimmed;
+    state.searchError = null;
+    dom.searchSubmit.disabled = true;
+    dom.searchSubmit.textContent = '搜索中…';
+    dom.searchClear.hidden = false;
+
+    request('/v1/recall', {
+      method: 'POST',
+      body: JSON.stringify({ query: trimmed, limit: RECALL_LIMIT })
+    })
+      .then(function (payload) {
+        if (seq !== state.searchSeq) return;
+        var items = payload && Array.isArray(payload.items) ? payload.items : [];
+        state.hits = items.map(function (hit) {
+          var full = state.byId.get(hit.id);
+          if (!full) {
+            return { id: hit.id, topic: hit.topic, statement: hit.statement };
+          }
+          return {
+            id: full.id,
+            topic: full.topic,
+            statement: full.statement,
+            version: full.version,
+            updatedAt: full.updatedAt
+          };
+        });
+        renderTable();
+        announce('检索完成，命中 ' + state.hits.length + ' 条');
+      })
+      .catch(function (error) {
+        if (seq !== state.searchSeq) return;
+        state.hits = [];
+        state.searchError = error;
+        renderTable();
+        showState(dom.memoriesState, {
+          title: '检索失败',
+          body: describeError(error) + ' 可以清除检索回到列表模式。',
+          actionLabel: '清除检索',
+          onAction: clearFilters
+        });
+      })
+      .then(function () {
+        if (seq !== state.searchSeq) return;
+        dom.searchSubmit.disabled = false;
+        dom.searchSubmit.textContent = '搜索';
+      });
+  }
+
+  function clearFilters() {
     state.searchSeq += 1;
-    setSearchBusy(false);
     state.view = 'list';
     state.query = '';
     state.hits = [];
     state.searchError = null;
-    if (dom.q.value) dom.q.value = '';
-    renderMemories();
-    announce('已回到列表模式');
+    state.topic = '';
+    dom.q.value = '';
+    dom.searchSubmit.disabled = false;
+    dom.searchSubmit.textContent = '搜索';
+    dom.searchClear.hidden = true;
+    renderTree();
+    renderTable();
+    announce('已清除筛选');
   }
 
-  function setSearchBusy(busy) {
-    state.searching = busy;
-    dom.searchSubmit.disabled = busy;
-    dom.searchSubmit.textContent = busy ? '搜索中…' : '搜索';
-    setBusy(dom.memoryBody, busy);
-  }
-
-  function runSearch(query) {
-    var value = text(query);
-    if (!value) {
-      clearSearch();
-      return Promise.resolve();
-    }
-    var seq = (state.searchSeq += 1);
-    state.query = value;
-    state.view = 'search';
-    state.searchError = null;
-    setSearchBusy(true);
-    return request('/v1/recall', {
-      method: 'POST',
-      body: JSON.stringify({ query: value, limit: RECALL_LIMIT })
-    }).then(
-      function (data) {
-        if (seq !== state.searchSeq) return;
-        var items = data && Array.isArray(data.items) ? data.items : [];
-        state.hits = hydrateHits(items);
-        state.searchError = null;
-        setSearchBusy(false);
-        renderMemories();
-        setBusy(dom.memoryBody, false);
-        announce('语义检索完成，命中 ' + state.hits.length + ' 条');
-      },
-      function (error) {
-        if (seq !== state.searchSeq) return;
-        noteFatal(error);
-        state.hits = [];
-        state.searchError = error;
-        setSearchBusy(false);
-        renderMemories();
-        setBusy(dom.memoryBody, false);
-        announce('语义检索失败');
-      }
-    );
-  }
-
-  /* -------------------------------------------------------------- pending */
-
-  function loadPending() {
-    setBusy(dom.pendingList, true);
-    return request('/v1/pending').then(
-      function (data) {
-        var list = data && Array.isArray(data.pending) ? data.pending : [];
-        state.pending = list;
-        renderPending(list);
-        setBusy(dom.pendingList, false);
-      },
-      function (error) {
-        noteFatal(error);
-        dom.pendingMeta.textContent = '读取失败';
-        dom.pendingList.hidden = true;
-        sectionErrorFrom(dom.pendingState, error, refreshAll);
-        setBusy(dom.pendingList, false);
-        throw error;
-      }
-    );
-  }
-
-  function renderPending(list) {
-    dom.pendingList.replaceChildren();
-    dom.pendingMeta.textContent =
-      list.length > 0 ? formatCount(list.length) + ' 条待裁决 · 裁决只在 dsh 里执行' : '没有积压';
-
-    if (!list.length) {
-      dom.pendingList.hidden = true;
-      showState(dom.pendingState, {
-        title: '没有待裁决',
-        body: '同主题的变更都已处理完毕。下一次 memory_upsert 遇到分歧时，新的条目会出现在这里，等你用 /memory approve 处理。'
-      });
-      return;
-    }
-
-    dom.pendingList.hidden = false;
-    hideState(dom.pendingState);
-
-    var fragment = document.createDocumentFragment();
-    list.forEach(function (change) {
-      fragment.appendChild(buildSlip(change || {}));
-    });
-    dom.pendingList.appendChild(fragment);
-    flagEnter(dom.pendingList);
-  }
-
-  function buildSlip(change) {
-    var kind = text(change.kind) || 'conflict';
-    var kindLabel = KIND_LABELS[kind] || kind;
-    var kindClass = KIND_CLASSES[kind] || 'conflict';
-    var current = change.current || null;
-    var proposed = change.proposed || {};
-    var changeId = text(change.changeId);
-
-    var currentStatement = current ? text(current.statement) : '';
-    var currentVersion =
-      current && typeof current.version === 'number' && current.version > 0
-        ? ' · v' + current.version
-        : '';
-    var proposedStatement = text(proposed.statement);
-    var note = el('span', { class: 'copy-note' });
-
-    var head = el('div', { class: 'slip__head' }, [
-      el('span', {
-        class: 'slip__kind slip__kind--' + kindClass,
-        text: kindLabel
-      }),
-      el('span', { class: 'slip__topic', text: labelFor(change.topic) }),
-      timeEl(change.createdAt, 'slip__time')
-    ]);
-
-    var sideCurrent = el('div', { class: 'slip__side' }, [
-      el('span', { class: 'slip__label', text: '现行' + currentVersion }),
-      el('p', {
-        class:
-          'slip__text' +
-          (currentStatement ? ' slip__text--old' : ' slip__text--none'),
-        text: currentStatement || '（无现行记录，批准后会新建一条）'
-      })
-    ]);
-
-    var sideProposed = el('div', { class: 'slip__side' }, [
-      el('span', { class: 'slip__label' }, [
-        '提议',
-        el('span', {
-          class: 'slip__conf',
-          text: '置信度 ' + formatConfidence(proposed.confidence)
-        })
-      ]),
-      el('p', {
-        class: 'slip__text',
-        text: proposedStatement || '（这条变更没有提议陈述）'
-      })
-    ]);
-
-    var foot = el('div', { class: 'slip__foot' }, [
-      el('span', { class: 'slip__foot-label', text: 'changeId' }),
-      el('code', { class: 'slip__id', text: changeId || '—' }),
-      el('button', {
-        class: 'btn btn--copy',
-        type: 'button',
-        text: '复制 changeId',
-        disabled: !changeId,
-        onclick: function () {
-          copyChangeId(changeId, note);
-        }
-      }),
-      note
-    ]);
-
-    return el('li', { class: 'slip' }, [
-      head,
-      el('div', { class: 'slip__pair' }, [sideCurrent, sideProposed]),
-      foot
-    ]);
-  }
-
-  function legacyCopy(value) {
-    if (typeof document.execCommand !== 'function') {
-      throw new Error('execCommand unavailable');
-    }
-    var area = document.createElement('textarea');
-    area.value = value;
-    area.setAttribute('readonly', '');
-    area.setAttribute('aria-hidden', 'true');
-    area.style.position = 'fixed';
-    area.style.top = '-1000px';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    if (typeof area.setSelectionRange === 'function') {
-      area.setSelectionRange(0, value.length);
-    }
-    var ok = false;
-    try {
-      ok = document.execCommand('copy');
-    } finally {
-      document.body.removeChild(area);
-    }
-    if (!ok) throw new Error('copy rejected');
-  }
-
-  function copyChangeId(value, note) {
-    if (!value) return;
-    var write =
-      navigator.clipboard && window.isSecureContext
-        ? navigator.clipboard.writeText(value)
-        : Promise.reject(new Error('clipboard unavailable'));
-
-    write.then(
-      function () {
-        markCopied(note);
-        announce('已复制 changeId：' + value);
-      },
-      function () {
-        try {
-          legacyCopy(value);
-          markCopied(note);
-          announce('已复制 changeId：' + value);
-        } catch (error) {
-          note.textContent = '复制失败，请手动选中';
-          note.classList.add('is-error');
-          announce('复制失败，请手动选中 changeId 后复制');
-        }
-      }
-    );
-  }
-
-  function markCopied(note) {
-    note.textContent = '已复制';
-    note.classList.remove('is-error');
-    window.setTimeout(function () {
-      note.textContent = '';
-    }, 4000);
-  }
-
-  /* ---------------------------------------------------------------- shell */
-
-  function refreshAll() {
-    return loadAll();
-  }
-
-  function loadAll() {
-    if (state.loading) return Promise.resolve();
-    state.loading = true;
-    state.fatalError = null;
-    dom.refresh.disabled = true;
-    dom.refresh.textContent = '更新中…';
-    dom.gate.hidden = true;
-
-    var jobs = [
-      loadStats(),
-      loadHealth(),
-      loadTopics(),
-      loadMemories(),
-      loadPending()
-    ];
-
-    return Promise.all(
-      jobs.map(function (job) {
-        return job.catch(function () {
-          return null;
-        });
-      })
-    ).then(function () {
-      state.fetchedAt = new Date();
-      renderOverviewMeta();
-      renderStatus();
-      dom.colophonMeta.textContent =
-        '数据获取时间 ' + formatTime(state.fetchedAt) + '（本地时区）';
-      showGate(state.fatalError);
-      dom.refresh.disabled = false;
-      dom.refresh.textContent = '刷新';
-      state.loading = false;
-      announce('数据已更新');
-    });
-  }
-
-  function renderOverviewMeta() {
-    var parts = [];
-    if (state.stats) {
-      parts.push('最近更新 ' + formatCount(state.recentItems.length) + ' 条');
-    } else {
-      parts.push('概览读取失败');
-    }
-    if (state.fetchedAt) {
-      parts.push('获取于 ' + formatClock(state.fetchedAt));
-    }
-    dom.overviewMeta.textContent = parts.join(' · ');
-  }
+  /* ----------------------------------------------------------------- init */
 
   function cacheDom() {
-    var map = {
-      refresh: 'refresh',
-      gate: 'gate',
-      gateTitle: 'gate-title',
-      gateBody: 'gate-body',
-      gateRetry: 'gate-retry',
-      live: 'live',
-      overviewMeta: 'overview-meta',
-      totals: 'totals',
-      statMemories: 'stat-memories',
-      statPending: 'stat-pending',
-      statPendingNote: 'stat-pending-note',
-      statTopics: 'stat-topics',
-      statSearch: 'stat-search',
-      statSearchNote: 'stat-search-note',
-      recent: 'recent',
-      recentState: 'recent-state',
-      status: 'status',
-      memoriesMeta: 'memories-meta',
-      searchForm: 'search-form',
-      q: 'q',
-      searchSubmit: 'search-submit',
-      searchClear: 'search-clear',
-      topicFilter: 'topic-filter',
-      searchMode: 'search-mode',
-      records: 'records',
-      memoryBody: 'memory-body',
-      memoryState: 'memory-state',
-      pendingMeta: 'pending-meta',
-      pendingList: 'pending-list',
-      pendingState: 'pending-state',
-      topicsMeta: 'topics-meta',
-      topicList: 'topic-list',
-      topicState: 'topic-state',
-      colophonMeta: 'colophon-meta'
-    };
-    for (var key in map) {
-      if (!Object.prototype.hasOwnProperty.call(map, key)) continue;
-      dom[key] = document.getElementById(map[key]);
-    }
+    dom.stats = document.getElementById('stats');
+    dom.statMemories = document.getElementById('stat-memories');
+    dom.statTopics = document.getElementById('stat-topics');
+    dom.statPending = document.getElementById('stat-pending');
+    dom.statSearch = document.getElementById('stat-search');
+    dom.tree = document.getElementById('topic-tree');
+    dom.treeAll = document.getElementById('tree-all');
+    dom.topicsMeta = document.getElementById('topics-meta');
+    dom.refresh = document.getElementById('refresh');
+    dom.fetchedAt = document.getElementById('fetched-at');
+    dom.memoriesMeta = document.getElementById('memories-meta');
+    dom.recordCount = document.getElementById('record-count');
+    dom.memoriesState = document.getElementById('memories-state');
+    dom.records = document.getElementById('records');
+    dom.recordsBody = document.getElementById('records-body');
+    dom.q = document.getElementById('q');
+    dom.searchForm = document.getElementById('search-form');
+    dom.searchSubmit = document.getElementById('search-submit');
+    dom.searchClear = document.getElementById('search-clear');
+    dom.banner = document.getElementById('banner');
+    dom.detail = document.getElementById('detail');
+    dom.history = document.getElementById('history');
+    dom.historyState = document.getElementById('history-state');
+    dom.historyCount = document.getElementById('history-count');
+    dom.pending = document.getElementById('pending');
+    dom.pendingState = document.getElementById('pending-state');
+    dom.pendingCount = document.getElementById('pending-count');
+    dom.live = document.getElementById('live');
   }
 
   function bindEvents() {
     dom.refresh.addEventListener('click', function () {
-      loadAll();
+      dom.refresh.disabled = true;
+      loadAll().then(
+        function () {
+          dom.refresh.disabled = false;
+        },
+        function () {
+          dom.refresh.disabled = false;
+        }
+      );
     });
 
-    dom.gateRetry.addEventListener('click', function () {
-      loadAll();
+    dom.treeAll.addEventListener('click', function () {
+      state.topic = '';
+      state.hits = [];
+      state.view = 'list';
+      renderTree();
+      renderTable();
+      announce('已显示全部主题');
     });
 
     dom.searchForm.addEventListener('submit', function (event) {
       event.preventDefault();
-      var value = dom.q.value.trim();
-      if (!value) {
-        clearSearch();
-        return;
-      }
-      runSearch(value);
+      runSearch(dom.q.value);
     });
 
-    dom.searchClear.addEventListener('click', function () {
-      clearSearch();
-    });
-
-    dom.q.addEventListener('input', function () {
-      if (state.view === 'search' && !dom.q.value.trim()) {
-        clearSearch();
-      }
-    });
-
-    dom.topicFilter.addEventListener('change', function () {
-      state.topic = dom.topicFilter.value;
-      renderMemories();
-      announce(
-        state.topic ? '已筛选主题：' + labelFor(state.topic) : '已取消主题筛选'
-      );
-    });
-  }
-
-  /* 导航高亮跟随滚动位置，而不是视口中线：停在页首时高亮必须是「概览」。 */
-  function initScrollSpy() {
-    var links = Array.prototype.slice.call(
-      document.querySelectorAll('.sections__link')
-    );
-    if (!links.length) return;
-    var sections = links
-      .map(function (link) {
-        return document.getElementById(link.dataset.nav);
-      })
-      .filter(Boolean);
-    if (!sections.length) return;
-
-    var ticking = false;
-
-    function activate() {
-      ticking = false;
-      var probe = window.scrollY + 140;
-      var activeId = sections[0].id;
-      for (var i = 0; i < sections.length; i += 1) {
-        var top = sections[i].getBoundingClientRect().top + window.scrollY;
-        if (top <= probe) activeId = sections[i].id;
-      }
-      /* 到底部时最后一段可能够不到判定线，直接高亮它。 */
-      var atBottom =
-        window.innerHeight + window.scrollY >=
-        document.documentElement.scrollHeight - 40;
-      if (atBottom) activeId = sections[sections.length - 1].id;
-
-      links.forEach(function (link) {
-        if (link.dataset.nav === activeId) {
-          link.setAttribute('aria-current', 'true');
-        } else {
-          link.removeAttribute('aria-current');
-        }
-      });
-    }
-
-    function onScroll() {
-      if (ticking) return;
-      ticking = true;
-      window.requestAnimationFrame(activate);
-    }
-
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onScroll);
-    activate();
+    dom.searchClear.addEventListener('click', clearFilters);
   }
 
   function init() {
     cacheDom();
-    if (!dom.searchForm || !dom.memoryBody) return;
     bindEvents();
-    initScrollSpy();
     loadAll();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  init();
 })();

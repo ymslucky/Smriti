@@ -32,10 +32,8 @@ export interface Env {
   ASSETS?: Fetcher
   /** 额外的 MCP 允许来源（逗号分隔的 hostname 或 URL），同源总是自动放行。 */
   MCP_ALLOWED_ORIGINS?: string
-  /** 槽位冲突策略：`manual`（默认，进待裁决）或 `auto`（低风险自动生效）。 */
+  /** 槽位冲突/疑似重复策略：`caller`（默认，模型裁决）、`server`（服务端直接覆盖）、`manual`（人工）。 */
   CONFLICT_POLICY?: string
-  /** auto 策略的最低置信度，默认 0.9。 */
-  AUTO_APPLY_MIN_CONFIDENCE?: string
   /** 常驻（core）记忆的主题前缀，逗号分隔，默认 `identity`。 */
   CORE_TOPIC_PREFIXES?: string
   /** 召回时最多带几条 core 记忆，默认 5。 */
@@ -61,14 +59,19 @@ function finiteNumber(value: string | undefined, fallback: number): number {
  * 默认值：人工裁决、core 前缀 `identity`、最多 5 条 core。
  */
 export function memoryServiceOptions(env: Env): {
-  conflictPolicy: 'manual' | 'auto'
-  autoApplyMinConfidence: number
+  conflictPolicy: 'caller' | 'server' | 'manual'
   coreTopicPrefixes: readonly string[]
   coreRecallLimit: number
 } {
+  // `auto` 是旧配置值，等价于服务端直接覆盖。
+  const conflictPolicy =
+    env.CONFLICT_POLICY === 'server' || env.CONFLICT_POLICY === 'auto'
+      ? 'server'
+      : env.CONFLICT_POLICY === 'manual'
+        ? 'manual'
+        : 'caller'
   return {
-    conflictPolicy: env.CONFLICT_POLICY === 'auto' ? 'auto' : 'manual',
-    autoApplyMinConfidence: finiteNumber(env.AUTO_APPLY_MIN_CONFIDENCE, 0.9),
+    conflictPolicy,
     coreTopicPrefixes: (env.CORE_TOPIC_PREFIXES ?? 'identity')
       .split(',')
       .map((item) => item.trim())

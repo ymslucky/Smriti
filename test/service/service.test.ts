@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest'
 import type { MemoryStore, SearchIndex } from '../../src/contracts'
 import {
   createMemoryService,
-  DEFAULT_AUTO_APPLY_MIN_CONFIDENCE,
   DEFAULT_CONFIDENCE,
   DEFAULT_SEARCH_LIMIT,
   LOCAL_DUPLICATE_SIMILARITY,
@@ -758,19 +757,22 @@ describe('时间维度与历史', () => {
 })
 
 describe('冲突策略', () => {
-  it('auto 且置信度达标：直接生效并把旧版移入 history', async () => {
-    const { store, service } = harness({ service: { conflictPolicy: 'auto' } })
+  it('默认 caller：冲突返回 pending 与模型裁决提示', async () => {
+    const { service } = harness()
 
-    const first = await service.upsert({
-      topic: 'identity.role',
-      statement: '是工程师',
-      confidence: DEFAULT_AUTO_APPLY_MIN_CONFIDENCE,
-    })
-    const second = await service.upsert({
-      topic: 'identity.role',
-      statement: '是架构师',
-      confidence: DEFAULT_AUTO_APPLY_MIN_CONFIDENCE,
-    })
+    await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    const second = await service.upsert({ topic: 'identity.role', statement: '是架构师' })
+
+    expect(second.status).toBe('pending_review')
+    expect(second.change?.kind).toBe('conflict')
+    expect(second.message).toContain('memory_resolve')
+  })
+
+  it('server：直接覆盖，旧版进 history 且可 restore', async () => {
+    const { store, service } = harness({ service: { conflictPolicy: 'server' } })
+
+    const first = await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    const second = await service.upsert({ topic: 'identity.role', statement: '是架构师' })
 
     expect(second.status).toBe('applied')
     expect(second.autoApplied).toBe(true)
@@ -778,36 +780,130 @@ describe('冲突策略', () => {
     expect(second.memory?.supersedes).toBe(first.memory!.id)
     expect(store.pendingChanges.size).toBe(0)
     expect(store.history).toHaveLength(1)
+  })
+
+  it('manual：默认队列，等待人工 approve / reject', async () => {
+    const { service } = harness({ service: { conflictPolicy: 'manual' } })
+
+    await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    const second = await service.upsert({ topic: 'identity.role', statement: '是架构师' })
+
+    expect(second.status).toBe('pending_review')
+    expect(second.message).toContain('人工')
+  })
+
+  it('server 模式下疑似重复跳过写入并记 journal', async () => {
+    const { store, service } = harness({ service: { conflictPolicy: 'server' } })
+
+    const first = await service.upsert({
+      topic: 'tooling.package-manager',
+      statement: '统一用 pnpm 安装依赖',
+    })
+    const duplicate = await service.upsert({
+      topic: 'tooling.runtime',
+      statement: '统一用 pnpm 安装依赖（推荐）',
+    })
+
+    expect(duplicate.status).toBe('unchanged')
+    expect(duplicate.memory?.id).toBe(first.memory!.id)
+    expect(store.pendingChanges.size).toBe(0)
     expect(store.journal.at(-1)).toMatchObject({
-      action: 'apply',
-      detail: expect.stringContaining('auto'),
+      action: 'reject',
+      detail: expect.stringContaining('dedupe'),
     })
   })
+})
 
-  it('auto 但置信度低于阈值：仍进待裁决', async () => {
-    const { service } = harness({ service: { conflictPolicy: 'auto' } })
+describe('模型裁决 resolve', () => {
+  async function conflict(service: ReturnType<typeof createMemoryService>) {
+    const current = await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    const pending = await service.upsert({ topic: 'identity.role', statement: '是架构师' })
+    return { current, changeId: pending.change!.changeId }
+  }
 
-    await service.upsert({ topic: 'identity.role', statement: '是工程师', confidence: 0.95 })
-    const second = await service.upsert({
-      topic: 'identity.role',
-      statement: '是架构师',
-      confidence: DEFAULT_AUTO_APPLY_MIN_CONFIDENCE - 0.05,
+  it('replace：提议取代现行，旧版进 history', async () => {
+    const { store, service } = harness()
+    const { current, changeId } = await conflict(service)
+
+    const result = await service.resolve(changeId, {
+      decision: 'replace',
+      reason: '用户后来更正了角色',
     })
 
-    expect(second.status).toBe('pending_review')
+    expect(result.status).toBe('applied')
+    expect(result.resolved).toBe('replace')
+    expect(result.memory?.statement).toBe('是架构师')
+    expect(result.memory?.version).toBe(2)
+    expect(result.memory?.supersedes).toBe(current.memory!.id)
+    expect(store.pendingChanges.size).toBe(0)
+    expect(store.history).toHaveLength(1)
   })
 
-  it('默认 manual：即使高置信度也进待裁决', async () => {
+  it('merge：写入合并陈述并取代现行', async () => {
     const { service } = harness()
+    const { changeId } = await conflict(service)
 
-    await service.upsert({ topic: 'identity.role', statement: '是工程师', confidence: 0.99 })
-    const second = await service.upsert({
-      topic: 'identity.role',
-      statement: '是架构师',
-      confidence: 0.99,
+    const result = await service.resolve(changeId, {
+      decision: 'merge',
+      statement: '是工程师，同时负责架构决策',
+      rationale: '两个身份都成立',
     })
 
-    expect(second.status).toBe('pending_review')
+    expect(result.status).toBe('applied')
+    expect(result.resolved).toBe('merge')
+    expect(result.memory?.statement).toBe('是工程师，同时负责架构决策')
+    expect(result.memory?.rationale).toBe('两个身份都成立')
+  })
+
+  it('merge 缺 statement 时拒绝且 pending 保留', async () => {
+    const { store, service } = harness()
+    const { changeId } = await conflict(service)
+
+    const result = await service.resolve(changeId, { decision: 'merge' })
+
+    expect(result.status).toBe('rejected')
+    expect(store.pendingChanges.has(changeId)).toBe(true)
+  })
+
+  it('keep：保留现行、丢弃提议并清空 pending', async () => {
+    const { store, service } = harness()
+    const { current, changeId } = await conflict(service)
+
+    const result = await service.resolve(changeId, { decision: 'keep', reason: '新说法不准确' })
+
+    expect(result.status).toBe('unchanged')
+    expect(result.resolved).toBe('keep')
+    expect(result.memory?.id).toBe(current.memory!.id)
+    expect(store.pendingChanges.size).toBe(0)
+    expect(store.journal.at(-1)).toMatchObject({
+      action: 'reject',
+      detail: expect.stringContaining('resolve:keep'),
+    })
+  })
+
+  it('疑似重复也可以裁决：replace 写入新记录', async () => {
+    const { service } = harness({ service: { conflictPolicy: 'caller' } })
+
+    await service.upsert({ topic: 'tooling.package-manager', statement: '统一用 pnpm 安装依赖' })
+    const pending = await service.upsert({
+      topic: 'tooling.runtime',
+      statement: '统一用 pnpm 安装依赖（推荐）',
+    })
+
+    const result = await service.resolve(pending.change!.changeId, {
+      decision: 'replace',
+      reason: '确实是同一条，但写到更合适的主题',
+    })
+
+    expect(result.status).toBe('applied')
+    expect(result.memory?.topic).toBe('tooling.runtime')
+  })
+
+  it('变更不存在时返回 rejected', async () => {
+    const { service } = harness()
+    const result = await service.resolve('chg_missing', { decision: 'keep' })
+    expect(result.status).toBe('rejected')
+    expect(result.message).toContain('chg_missing')
   })
 })
 

@@ -71,8 +71,7 @@ wrangler secret put ACCESS_AUD           # Access 应用的 Audience
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `CONFLICT_POLICY` | `manual` | 槽位冲突进待裁决；设为 `auto` 时高置信度冲突自动生效，旧版进 history、可 `restore` 回滚 |
-| `AUTO_APPLY_MIN_CONFIDENCE` | `0.9` | `auto` 策略的最低置信度 |
+| `CONFLICT_POLICY` | `caller` | 冲突/疑似重复的处理：`caller` 返回 pending 由调用方模型用 `memory_resolve` 裁决；`server` 直接覆盖（旧版进 history）；`manual` 等人工 approve |
 | `CORE_TOPIC_PREFIXES` | `identity` | 常驻（core）记忆的主题前缀，逗号分隔；召回时优先带上 |
 | `CORE_RECALL_LIMIT` | `5` | 每次召回最多带几条 core |
 

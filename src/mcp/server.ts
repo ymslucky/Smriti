@@ -94,6 +94,14 @@ export const toolSchemas = {
       .optional(),
     limit: z.number().int().min(1).max(MAX_HISTORY_LIMIT).optional(),
   }),
+  memory_resolve: z.object({
+    change_id: z.string().min(1, 'change_id 不能为空'),
+    decision: z.enum(['replace', 'merge', 'keep']),
+    /** merge 时合并后的陈述；replace / keep 忽略。 */
+    statement: z.string().min(1).max(500).optional(),
+    rationale: z.string().optional(),
+    reason: z.string().optional(),
+  }),
 } as const
 
 function textResult(value: unknown): CallToolResult {
@@ -242,7 +250,9 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
       description:
         '写入一条持久偏好。topic 自由命名：小写 slug、点分最多 3 段（如 identity.role），首次写入即创建；' +
         'topic_label 可选，作为展示名。没有子主题的 topic 是槽位，已有不同陈述时返回 status=pending_review；' +
-        '有子主题的 topic 是分类，可容纳多条。idempotency_key 可用同一键安全重试。',
+        '有子主题的 topic 是分类，可容纳多条。' +
+        '收到 pending_review 时必须由你调用 memory_resolve（replace/merge/keep）裁决，不要转交人工。' +
+        'idempotency_key 可用同一键安全重试。',
       inputSchema: toolSchemas.memory_upsert,
     },
     async ({ topic, topic_label, statement, rationale, confidence, idempotency_key, source }) =>
@@ -305,6 +315,29 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
           limit: limit ?? DEFAULT_HISTORY_LIMIT,
         })
         return textResult({ ...(at !== undefined ? { at } : {}), items })
+      }),
+  )
+
+  server.registerTool(
+    'memory_resolve',
+    {
+      description:
+        '裁决一条 pending_review 变更，不需要人工：' +
+        'replace 用提议取代现行（旧版进 history，可 restore）；' +
+        'merge 用 statement 把两者合并成一条新陈述；' +
+        'keep 保留现行、丢弃提议。裁决后 pending 立即消失并写 journal。',
+      inputSchema: toolSchemas.memory_resolve,
+    },
+    async ({ change_id, decision, statement, rationale, reason }) =>
+      guarded(async () => {
+        const result = await service.resolve(change_id, {
+          decision,
+          ...(statement !== undefined ? { statement } : {}),
+          ...(rationale !== undefined ? { rationale } : {}),
+          ...(reason !== undefined ? { reason } : {}),
+        })
+        if (result.status === 'applied') afterWrite()
+        return textResult(result)
       }),
   )
 

@@ -1,301 +1,131 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Smriti · 永久记忆网关</title>
-<meta name="description" content="Smriti 只读视图：记忆总数、记忆表、待裁决变更与固定主题树。" />
-<meta name="color-scheme" content="light dark" />
-<meta name="theme-color" content="#24483A" media="(prefers-color-scheme: light)" />
-<meta name="theme-color" content="#1B3A2F" media="(prefers-color-scheme: dark)" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2324483a'/%3E%3Crect x='7' y='7' width='4' height='18' fill='%23edf1e6'/%3E%3Crect x='14' y='7' width='11' height='3' fill='%23edf1e6'/%3E%3Crect x='14' y='14' width='11' height='3' fill='%23edf1e6'/%3E%3Crect x='14' y='21' width='7' height='3' fill='%23b7c9bd'/%3E%3C/svg%3E" />
-<link rel="stylesheet" href="/ui/styles.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Smriti 记忆工作台：主题树、记忆表、版本历史与检索状态。只读。">
+<meta name="theme-color" content="#17251d" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f0e6" media="(prefers-color-scheme: light)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2317251d'/%3E%3Crect x='8' y='8' width='3' height='16' fill='%23e8e6d8'/%3E%3Crect x='14' y='8' width='10' height='3' fill='%23e8e6d8'/%3E%3Crect x='14' y='14' width='10' height='3' fill='%23e8e6d8'/%3E%3Crect x='14' y='20' width='6' height='3' fill='%238a6420'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/ui/styles.css">
+<title>记忆工作台 · Smriti</title>
 </head>
 <body>
 <a class="skip" href="#main">跳到主要内容</a>
 
-<header class="binding">
-  <div class="binding__inner">
-    <h1 class="brand">
-      <span class="brand__name">Smriti</span>
-      <span class="brand__note">永久记忆网关</span>
-    </h1>
-    <div class="binding__aside">
-      <p class="binding__flag">只读视图 · 裁决在 dsh 内完成</p>
-      <button class="btn btn--onbind" type="button" id="refresh">刷新</button>
-    </div>
-  </div>
-</header>
-
-<nav class="sections" aria-label="页面区块">
-  <ul class="sections__list">
-    <li><a class="sections__link" href="#overview" data-nav="overview">概览<span class="sections__count" data-count="overview"></span></a></li>
-    <li><a class="sections__link" href="#memories" data-nav="memories">记忆<span class="sections__count" data-count="memories"></span></a></li>
-    <li><a class="sections__link" href="#pending" data-nav="pending">待裁决<span class="sections__count" data-count="pending"></span></a></li>
-    <li><a class="sections__link" href="#topics" data-nav="topics">主题<span class="sections__count" data-count="topics"></span></a></li>
-  </ul>
-</nav>
-
-<main id="main" tabindex="-1">
-  <div class="alert" id="gate" role="alert" hidden>
-    <p class="alert__title" id="gate-title"></p>
-    <p class="alert__body" id="gate-body"></p>
-    <div class="alert__actions">
-      <button class="btn btn--small" type="button" id="gate-retry">重试</button>
-    </div>
-  </div>
-
-  <section class="section" id="overview" tabindex="-1" aria-labelledby="overview-title">
-    <div class="section__head">
-      <h2 class="section__title" id="overview-title">概览</h2>
-      <p class="section__meta" id="overview-meta">正在读取网关…</p>
+<div class="shell">
+  <aside class="rail" aria-label="概览与主题">
+    <div class="rail__head">
+      <p class="rail__brand">Smriti</p>
+      <p class="rail__sub">记忆工作台</p>
+      <p class="rail__note">只读视图。写入、裁决与回滚都在 dsh 内完成。</p>
     </div>
 
-    <dl class="totals" id="totals" aria-busy="true">
-      <div class="totals__cell">
-        <dt class="totals__label">记忆</dt>
-        <dd class="totals__value">
-          <span class="totals__num" id="stat-memories">—</span>
-          <span class="totals__note">R2 中的现行记录</span>
-        </dd>
+    <dl class="stats" id="stats" aria-busy="true">
+      <div class="stats__cell">
+        <dt>记忆</dt>
+        <dd id="stat-memories">—</dd>
       </div>
-      <div class="totals__cell">
-        <dt class="totals__label">待裁决</dt>
-        <dd class="totals__value">
-          <span class="totals__num" id="stat-pending">—</span>
-          <span class="totals__note" id="stat-pending-note">等待在 dsh 里裁决</span>
-        </dd>
+      <div class="stats__cell">
+        <dt>主题</dt>
+        <dd id="stat-topics">—</dd>
       </div>
-      <div class="totals__cell">
-        <dt class="totals__label">主题</dt>
-        <dd class="totals__value">
-          <span class="totals__num" id="stat-topics">—</span>
-          <span class="totals__note">有记忆的主题</span>
-        </dd>
+      <div class="stats__cell">
+        <dt>待裁决</dt>
+        <dd id="stat-pending">—</dd>
       </div>
-      <div class="totals__cell">
-        <dt class="totals__label">AI Search</dt>
-        <dd class="totals__value">
-          <span class="totals__num totals__num--text" id="stat-search">—</span>
-          <span class="totals__note" id="stat-search-note">语义检索状态</span>
-        </dd>
+      <div class="stats__cell">
+        <dt>检索</dt>
+        <dd id="stat-search" class="is-text">—</dd>
       </div>
     </dl>
 
-    <div class="overview">
-      <section class="panel" aria-labelledby="recent-title">
-        <h3 class="panel__title" id="recent-title">最近更新</h3>
-        <ol class="recent" id="recent" aria-busy="true">
-          <li class="recent__row">
-            <span class="skel skel--time"></span>
-            <span class="skel skel--topic"></span>
-            <span class="skel skel--text"></span>
-          </li>
-          <li class="recent__row">
-            <span class="skel skel--time"></span>
-            <span class="skel skel--topic"></span>
-            <span class="skel skel--text"></span>
-          </li>
-          <li class="recent__row">
-            <span class="skel skel--time"></span>
-            <span class="skel skel--topic"></span>
-            <span class="skel skel--text"></span>
-          </li>
-          <li class="recent__row">
-            <span class="skel skel--time"></span>
-            <span class="skel skel--topic"></span>
-            <span class="skel skel--text"></span>
-          </li>
-          <li class="recent__row">
-            <span class="skel skel--time"></span>
-            <span class="skel skel--topic"></span>
-            <span class="skel skel--text"></span>
-          </li>
-        </ol>
-        <div class="panel__state" id="recent-state" hidden></div>
-      </section>
+    <nav class="tree" aria-label="主题筛选">
+      <div class="tree__head">
+        <h2>主题</h2>
+        <button class="linkbtn" id="tree-all" type="button" aria-pressed="true">全部</button>
+      </div>
+      <ul class="tree__list" id="topic-tree" aria-busy="true"></ul>
+      <p class="tree__meta" id="topics-meta">正在读取…</p>
+    </nav>
 
-      <section class="panel" aria-labelledby="run-title">
-        <h3 class="panel__title" id="run-title">运行状态</h3>
-        <dl class="status" id="status" aria-busy="true">
-          <div class="status__row">
-            <dt>健康检查</dt>
-            <dd><span class="skel skel--val"></span></dd>
-          </div>
-          <div class="status__row">
-            <dt>实例</dt>
-            <dd><span class="skel skel--val"></span></dd>
-          </div>
-          <div class="status__row">
-            <dt>鉴权</dt>
-            <dd><span class="skel skel--val"></span></dd>
-          </div>
-          <div class="status__row">
-            <dt>数据获取</dt>
-            <dd><span class="skel skel--val"></span></dd>
-          </div>
-        </dl>
-      </section>
+    <div class="rail__foot">
+      <button class="btn btn--onrail" id="refresh" type="button">刷新</button>
+      <span class="rail__stamp" id="fetched-at">—</span>
     </div>
-  </section>
+  </aside>
 
-  <section class="section" id="memories" tabindex="-1" aria-labelledby="memories-title">
-    <div class="section__head">
-      <h2 class="section__title" id="memories-title">记忆</h2>
-      <p class="section__meta" id="memories-meta">正在读取…</p>
-    </div>
+  <main class="main" id="main">
+    <header class="main__head">
+      <div>
+        <h1 class="main__title">记忆</h1>
+        <p class="main__meta" id="memories-meta" aria-live="polite">正在读取…</p>
+      </div>
+      <p class="main__badge" id="mode-badge">只读</p>
+    </header>
 
-    <form class="filters" id="search-form" role="search" aria-label="搜索记忆">
-      <div class="field field--grow">
-        <label class="field__label" for="q">关键词搜索</label>
-        <input class="field__input" id="q" name="q" type="search" autocomplete="off" spellcheck="false" placeholder="输入关键词或一句话，例如：包管理器 或 提交粒度" />
+    <form class="searchbar" id="search-form" role="search">
+      <label class="searchbar__label" for="q">语义检索</label>
+      <div class="searchbar__row">
+        <input id="q" name="q" type="search" autocomplete="off" placeholder="按意思找，例如「缩进」「角色」" aria-describedby="search-hint">
+        <button class="btn btn--primary" id="search-submit" type="submit">搜索</button>
+        <button class="btn" id="search-clear" type="button" hidden>清除</button>
       </div>
-      <div class="filters__actions">
-        <button class="btn btn--primary" type="submit" id="search-submit">搜索</button>
-        <button class="btn btn--quiet" type="button" id="search-clear" hidden>清除搜索</button>
-      </div>
-      <div class="field field--topic">
-        <label class="field__label" for="topic-filter">主题</label>
-        <select class="field__input field__select" id="topic-filter">
-          <option value="">全部主题</option>
-        </select>
-      </div>
+      <p class="searchbar__hint" id="search-hint">检索走 AI Search；列表模式按更新时间倒序。</p>
     </form>
 
-    <p class="mode-line" id="search-mode" role="status" aria-live="polite"></p>
+    <div class="banner" id="banner" role="alert" hidden></div>
 
-    <div class="table-wrap">
-      <table class="records" id="records">
-        <caption class="sr-only">记忆列表</caption>
+    <section class="records-panel" aria-labelledby="records-title">
+      <div class="records-panel__head">
+        <h2 class="visually-hidden" id="records-title">记忆列表</h2>
+        <span class="records-panel__count" id="record-count">—</span>
+      </div>
+      <div id="memories-state"></div>
+      <table class="records" id="records" hidden>
+        <caption class="visually-hidden">记忆列表，按更新时间倒序</caption>
         <thead>
           <tr>
-            <th scope="col" class="col-topic">主题</th>
-            <th scope="col" class="col-statement">陈述</th>
+            <th scope="col">主题</th>
+            <th scope="col">陈述</th>
             <th scope="col" class="col-version">版本</th>
             <th scope="col" class="col-time">更新时间</th>
           </tr>
         </thead>
-        <tbody id="memory-body" aria-busy="true">
-          <tr>
-            <td class="cell-topic"><span class="skel skel--topic"></span></td>
-            <td class="cell-statement"><span class="skel skel--line"></span><span class="skel skel--line skel--short"></span></td>
-            <td class="cell-version"><span class="skel skel--val"></span></td>
-            <td class="cell-time"><span class="skel skel--val"></span></td>
-          </tr>
-          <tr>
-            <td class="cell-topic"><span class="skel skel--topic"></span></td>
-            <td class="cell-statement"><span class="skel skel--line"></span></td>
-            <td class="cell-version"><span class="skel skel--val"></span></td>
-            <td class="cell-time"><span class="skel skel--val"></span></td>
-          </tr>
-          <tr>
-            <td class="cell-topic"><span class="skel skel--topic"></span></td>
-            <td class="cell-statement"><span class="skel skel--line"></span><span class="skel skel--line skel--short"></span></td>
-            <td class="cell-version"><span class="skel skel--val"></span></td>
-            <td class="cell-time"><span class="skel skel--val"></span></td>
-          </tr>
-          <tr>
-            <td class="cell-topic"><span class="skel skel--topic"></span></td>
-            <td class="cell-statement"><span class="skel skel--line"></span></td>
-            <td class="cell-version"><span class="skel skel--val"></span></td>
-            <td class="cell-time"><span class="skel skel--val"></span></td>
-          </tr>
-          <tr>
-            <td class="cell-topic"><span class="skel skel--topic"></span></td>
-            <td class="cell-statement"><span class="skel skel--line"></span></td>
-            <td class="cell-version"><span class="skel skel--val"></span></td>
-            <td class="cell-time"><span class="skel skel--val"></span></td>
-          </tr>
-        </tbody>
+        <tbody id="records-body"></tbody>
       </table>
-      <div class="table-wrap__state" id="memory-state" hidden></div>
-    </div>
-  </section>
+    </section>
+  </main>
 
-  <section class="section" id="pending" tabindex="-1" aria-labelledby="pending-title">
-    <div class="section__head">
-      <h2 class="section__title" id="pending-title">待裁决</h2>
-      <p class="section__meta" id="pending-meta">正在读取…</p>
-    </div>
+  <aside class="inspector" aria-label="详情与历史">
+    <section class="detail" id="detail" aria-live="polite">
+      <h2 class="inspector__title">详情</h2>
+      <p class="detail__empty">选择左侧任意一条记忆，查看理由、版本与时间。</p>
+    </section>
 
-    <p class="command-hint">
-      这里只列出分歧，不提供裁决按钮。在 dsh 里用 <code>/memory review</code> 逐条查看，用 <code>/memory approve &lt;changeId&gt;</code> 批准。复制 changeId 后可以直接粘进命令。
-    </p>
+    <section class="history" aria-labelledby="history-title">
+      <div class="history__head">
+        <h2 class="inspector__title" id="history-title">历史</h2>
+        <span class="history__count" id="history-count">—</span>
+      </div>
+      <p class="history__hint">被取代或删除的版本，保留 30 天。</p>
+      <div id="history-state"></div>
+      <ol class="timeline" id="history" hidden></ol>
+    </section>
 
-    <ul class="slips" id="pending-list" aria-busy="true">
-      <li class="slip slip--skeleton">
-        <div class="slip__head"><span class="skel skel--tag"></span><span class="skel skel--topic"></span></div>
-        <div class="slip__pair">
-          <div class="slip__side"><span class="skel skel--val"></span><span class="skel skel--line"></span></div>
-          <div class="slip__side"><span class="skel skel--val"></span><span class="skel skel--line"></span></div>
-        </div>
-      </li>
-      <li class="slip slip--skeleton">
-        <div class="slip__head"><span class="skel skel--tag"></span><span class="skel skel--topic"></span></div>
-        <div class="slip__pair">
-          <div class="slip__side"><span class="skel skel--val"></span><span class="skel skel--line"></span></div>
-          <div class="slip__side"><span class="skel skel--val"></span><span class="skel skel--line"></span></div>
-        </div>
-      </li>
-    </ul>
-    <div class="slips__state" id="pending-state" hidden></div>
-  </section>
+    <section class="pending" aria-labelledby="pending-title">
+      <div class="history__head">
+        <h2 class="inspector__title" id="pending-title">待裁决</h2>
+        <span class="history__count" id="pending-count">—</span>
+      </div>
+      <p class="history__hint">由调用方模型用 memory_resolve 自动处理，不需要人工。</p>
+      <div id="pending-state"></div>
+      <ol class="pending__list" id="pending" hidden></ol>
+    </section>
+  </aside>
+</div>
 
-  <section class="section" id="topics" tabindex="-1" aria-labelledby="topics-title">
-    <div class="section__head">
-      <h2 class="section__title" id="topics-title">主题</h2>
-      <p class="section__meta" id="topics-meta">正在读取…</p>
-    </div>
-
-    <ol class="shelf" id="topic-list" aria-busy="true">
-      <li class="shelf__row">
-        <span class="shelf__name"><span class="skel skel--topic"></span></span>
-        <span class="shelf__desc"><span class="skel skel--line"></span></span>
-        <span class="shelf__meter"><progress class="meter" value="0" max="1" aria-label="计数加载中"></progress></span>
-        <span class="shelf__count"><span class="skel skel--val"></span></span>
-      </li>
-      <li class="shelf__row">
-        <span class="shelf__name"><span class="skel skel--topic"></span></span>
-        <span class="shelf__desc"><span class="skel skel--line"></span></span>
-        <span class="shelf__meter"><progress class="meter" value="0" max="1" aria-label="计数加载中"></progress></span>
-        <span class="shelf__count"><span class="skel skel--val"></span></span>
-      </li>
-      <li class="shelf__row">
-        <span class="shelf__name"><span class="skel skel--topic"></span></span>
-        <span class="shelf__desc"><span class="skel skel--line"></span></span>
-        <span class="shelf__meter"><progress class="meter" value="0" max="1" aria-label="计数加载中"></progress></span>
-        <span class="shelf__count"><span class="skel skel--val"></span></span>
-      </li>
-      <li class="shelf__row">
-        <span class="shelf__name"><span class="skel skel--topic"></span></span>
-        <span class="shelf__desc"><span class="skel skel--line"></span></span>
-        <span class="shelf__meter"><progress class="meter" value="0" max="1" aria-label="计数加载中"></progress></span>
-        <span class="shelf__count"><span class="skel skel--val"></span></span>
-      </li>
-      <li class="shelf__row">
-        <span class="shelf__name"><span class="skel skel--topic"></span></span>
-        <span class="shelf__desc"><span class="skel skel--line"></span></span>
-        <span class="shelf__meter"><progress class="meter" value="0" max="1" aria-label="计数加载中"></progress></span>
-        <span class="shelf__count"><span class="skel skel--val"></span></span>
-      </li>
-      <li class="shelf__row">
-        <span class="shelf__name"><span class="skel skel--topic"></span></span>
-        <span class="shelf__desc"><span class="skel skel--line"></span></span>
-        <span class="shelf__meter"><progress class="meter" value="0" max="1" aria-label="计数加载中"></progress></span>
-        <span class="shelf__count"><span class="skel skel--val"></span></span>
-      </li>
-    </ol>
-    <div class="shelf__state" id="topic-state" hidden></div>
-  </section>
-</main>
-
-<footer class="colophon">
-  <p class="colophon__line">Smriti 对所有写入只保留版本历史；删除是软删除，历史保留 30 天。本页不写入、不裁决、不删除。</p>
-  <p class="colophon__meta" id="colophon-meta">数据获取时间 —</p>
-</footer>
-
-<p class="sr-only" id="live" role="status" aria-live="polite"></p>
-
-<script src="/ui/app.js"></script>
+<div class="visually-hidden" id="live" role="status" aria-live="polite"></div>
+<script src="/ui/app.js" defer></script>
 </body>
 </html>

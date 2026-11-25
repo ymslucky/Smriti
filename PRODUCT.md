@@ -31,8 +31,8 @@ Smriti 是给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search �
 
 ## Capabilities and Constraints
 
-- 只读视图，四个区块：概览（记忆总数 / 待裁决数 / 已用主题数 / AI Search 是否就绪 + 最近更新 5 条）、记忆（表格 + 主题筛选 + 关键词搜索）、待裁决（只读对比 + changeId）、主题（由数据推导的主题树与计数）；主题没有固定词表，点分表示层级；
-- 可用只读端点：`GET /v1/stats`、`GET /v1/memories?topic=&limit=`、`GET /v1/topics`、`GET /v1/pending`、`POST /v1/recall`、`GET /v1/health`；
+- 只读工作台，三栏：左栏（记忆 / 主题 / 待裁决 / 检索四项统计 + 可点击筛选的主题树）、中栏（语义检索 + 记忆表，按更新时间倒序）、右栏（选中记录的详情、归档历史、待裁决队列）；主题没有固定词表，点分表示层级；
+- 可用的只读端点：`GET /v1/stats`、`GET /v1/memories?topic=&limit=`、`GET /v1/topics`、`GET /v1/pending`、`GET /v1/history`、`POST /v1/recall`、`GET /v1/health`；历史与回滚的写操作走 `/v1/history/.../restore`，但页面不提供按钮；
 - 术语固定：**记忆 / 主题 / 待裁决**。`topic` 是写入方声明的层级标识（如 `identity.role`），展示名优先用 `topic_label`，其次用种子提示的中文名，最后回退到 id；
 - 状态必须齐备：加载骨架、空状态（无记忆 / 无待裁决）、错误态（网关不可达 / 401 鉴权）、窄屏 ≥375px 单列；
 - 深浅色都可用（`prefers-color-scheme`），焦点可见、键盘可达、`prefers-reduced-motion` 生效；

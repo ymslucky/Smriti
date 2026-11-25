@@ -46,7 +46,7 @@ const MCP_TUTORIAL_PATH = '/ui/mcp.html'
 const MCP_METHOD_NOT_ALLOWED_MESSAGE =
   'MCP Streamable HTTP endpoint: send JSON-RPC with POST. Browsers cannot open it directly; see /ui for the dashboard.'
 
-const PENDING_ACTION_ROUTE = /^\/v1\/pending\/([^/]+)\/(approve|reject)$/
+const PENDING_ACTION_ROUTE = /^\/v1\/pending\/([^/]+)\/(approve|reject|resolve)$/
 /** 历史回滚：`POST /v1/history/{topic}/{id}/restore`。 */
 const HISTORY_RESTORE_ROUTE = /^\/v1\/history\/([^/]+)\/([^/]+)\/restore$/
 /** `/v1/history` 的默认与最大条数。 */
@@ -619,6 +619,27 @@ export async function handle(
         changeId = decodeURIComponent(pendingAction[1])
       } catch {
         throw new HttpError(400, 'invalid_request', 'Pending change id must be URL encoded')
+      }
+
+      if (pendingAction[2] === 'resolve') {
+        // 调用方模型裁决：replace / merge / keep。与人工 approve/reject 同一队列，但不需要人。
+        const body = await readJsonObject(request)
+        const decision = body.decision
+        if (decision !== 'replace' && decision !== 'merge' && decision !== 'keep') {
+          throw new HttpError(400, 'invalid_request', 'decision must be replace, merge or keep')
+        }
+        const statement = typeof body.statement === 'string' ? body.statement : undefined
+        if (decision === 'merge' && (statement ?? '').trim() === '') {
+          throw new HttpError(400, 'invalid_request', 'merge requires a non-empty statement')
+        }
+        const result = await service.resolve(changeId, {
+          decision,
+          ...(statement !== undefined ? { statement } : {}),
+          ...(typeof body.rationale === 'string' ? { rationale: body.rationale } : {}),
+          ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+        })
+        if (result.status === 'applied') scheduleSearchSync(ctx, search)
+        return json(result)
       }
 
       if (pendingAction[2] === 'approve') {

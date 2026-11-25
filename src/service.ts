@@ -36,6 +36,7 @@ import type {
   MemoryRecord,
   PendingChange,
   PendingKind,
+  ResolutionInput,
   SearchHealth,
   SearchHit,
   TopicSummary,
@@ -50,13 +51,12 @@ export interface MemoryServiceDeps {
   /** id 生成注入，默认 16 位 hex；测试可用递增序列。 */
   newId?: () => string
   /**
-   * 槽位冲突策略：
-   * - `manual`（默认）：冲突进待裁决，等人批；
-   * - `auto`：置信度 ≥ `autoApplyMinConfidence` 的槽位冲突直接生效（旧版进 history，可 restore 回滚）。
+   * 槽位冲突 / 疑似重复的处理策略：
+   * - `caller`（默认）：返回 `pending_review` 与 changeId，由**调用方模型**用 `resolve` 裁决；
+   * - `server`：服务端直接按"新覆盖旧"生效（旧版进 history，可 restore）；
+   * - `manual`：返回 pending，等人工 approve/reject（兼容旧行为）。
    */
-  conflictPolicy?: 'manual' | 'auto'
-  /** auto 策略的最低置信度，默认 0.9。 */
-  autoApplyMinConfidence?: number
+  conflictPolicy?: 'caller' | 'server' | 'manual'
   /** 常驻（core）记忆的主题前缀；recall 时优先带上。 */
   coreTopicPrefixes?: readonly string[]
   /** 召回时最多带几条 core 记忆，默认 5。 */
@@ -65,8 +65,6 @@ export interface MemoryServiceDeps {
 
 /** 模型未显式给出 confidence 时的默认值。 */
 export const DEFAULT_CONFIDENCE = 0.8
-/** auto 策略的默认最低置信度。 */
-export const DEFAULT_AUTO_APPLY_MIN_CONFIDENCE = 0.9
 /** 召回默认带几条 core。 */
 export const DEFAULT_CORE_RECALL_LIMIT = 5
 /**
@@ -188,12 +186,7 @@ function validAt(record: MemoryRecord, instant: number): boolean {
 export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   const store: MemoryStore = deps.store
   const searchIndex: SearchIndex = deps.search
-  const conflictPolicy = deps.conflictPolicy ?? 'manual'
-  const autoApplyMinConfidence =
-    typeof deps.autoApplyMinConfidence === 'number' &&
-    Number.isFinite(deps.autoApplyMinConfidence)
-      ? deps.autoApplyMinConfidence
-      : DEFAULT_AUTO_APPLY_MIN_CONFIDENCE
+  const conflictPolicy = deps.conflictPolicy ?? 'caller'
   const coreTopicPrefixes = deps.coreTopicPrefixes ?? []
   const coreRecallLimit =
     typeof deps.coreRecallLimit === 'number' && deps.coreRecallLimit > 0
@@ -380,7 +373,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     // 没有子主题的 topic 是槽位：已有不同陈述时进待裁决（或按 auto 策略自动生效）；
     // 一旦有子主题（例如写过 code.style.indent），code.style 变成分类，可容纳多条。
     if (current && !hasChildTopics(all, topic)) {
-      if (conflictPolicy === 'auto' && proposed.confidence >= autoApplyMinConfidence) {
+      if (conflictPolicy === 'server') {
         const record: MemoryRecord = {
           id: nextRecordId(),
           topic,
@@ -422,12 +415,32 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         changeId: change.changeId,
         detail: `pending:conflict 与 ${current.id} 冲突`,
       })
-      return { status: 'pending_review', change }
+      return {
+        status: 'pending_review',
+        change,
+        message:
+          conflictPolicy === 'caller'
+            ? '槽位冲突：请调用 memory_resolve（replace / merge / keep）裁决，不要转交人工'
+            : '槽位冲突：等待人工 approve / reject',
+      }
     }
 
     // 本地相似度先行：索引可能滞后，文本相似度也更确定；检索只作为语义召回补充。
     const localNear = findLocalSimilar(all, statement, topic)
     if (localNear) {
+      if (conflictPolicy === 'server') {
+        await store.appendJournal({
+          at,
+          action: 'reject',
+          topic,
+          detail: `dedupe:${localNear.record.id} 本地相似 ${localNear.similarity.toFixed(2)}`,
+        })
+        return {
+          status: 'unchanged',
+          memory: localNear.record,
+          message: '已存在相似记忆，跳过写入',
+        }
+      }
       const change = await createPendingChange(
         'possible-duplicate',
         topic,
@@ -442,11 +455,27 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         changeId: change.changeId,
         detail: `pending:possible-duplicate 本地相似 ${localNear.similarity.toFixed(2)} ${localNear.record.id}（topic=${localNear.record.topic}）`,
       })
-      return { status: 'pending_review', change }
+      return {
+        status: 'pending_review',
+        change,
+        message:
+          conflictPolicy === 'caller'
+            ? '疑似重复：请调用 memory_resolve（replace / merge / keep）裁决，不要转交人工'
+            : '疑似重复：等待人工 approve / reject',
+      }
     }
 
     const near = await findNearDuplicate(statement, topic)
     if (near) {
+      if (conflictPolicy === 'server') {
+        await store.appendJournal({
+          at,
+          action: 'reject',
+          topic,
+          detail: `dedupe:${near.hit.id} 检索相似 ${near.similarity.toFixed(2)}`,
+        })
+        return { status: 'unchanged', message: '已存在相似记忆，跳过写入' }
+      }
       const change = await createPendingChange(
         'possible-duplicate',
         topic,
@@ -461,7 +490,14 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         changeId: change.changeId,
         detail: `pending:possible-duplicate 检索相似 ${near.similarity.toFixed(2)} ${near.hit.id}（score=${near.hit.score.toFixed(2)}）`,
       })
-      return { status: 'pending_review', change }
+      return {
+        status: 'pending_review',
+        change,
+        message:
+          conflictPolicy === 'caller'
+            ? '疑似重复：请调用 memory_resolve（replace / merge / keep）裁决，不要转交人工'
+            : '疑似重复：等待人工 approve / reject',
+      }
     }
 
     const record: MemoryRecord = {
@@ -686,6 +722,85 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     )
   }
 
+  /**
+   * 调用方模型裁决：replace / merge / keep。
+   * 裁决立即生效、不留人工队列：
+   * - replace：提议取代现行（旧版进 history，可 restore）；
+   * - merge：把提议与现行合并成一条新陈述（必须提供 statement）；
+   * - keep：保留现行、丢弃提议，记 journal。
+   */
+  async function resolve(changeId: string, input: ResolutionInput): Promise<UpsertResult> {
+    const change = await store.getPending(changeId)
+    if (!change) {
+      return { status: 'rejected', message: `待裁决变更不存在：${changeId}` }
+    }
+
+    const at = now().toISOString()
+
+    if (input.decision === 'keep') {
+      await store.deletePending(changeId)
+      await store.appendJournal({
+        at,
+        action: 'reject',
+        topic: change.topic,
+        changeId,
+        detail: `resolve:keep${input.reason !== undefined ? ` ${input.reason}` : ''}`,
+      })
+      return {
+        status: 'unchanged',
+        ...(change.current !== null ? { memory: change.current } : {}),
+        message: '按裁决保留现状，丢弃提议',
+        resolved: 'keep',
+      }
+    }
+
+    const merged = input.decision === 'merge' ? normalizeStatement(input.statement ?? '') : ''
+    if (input.decision === 'merge' && merged === '') {
+      return { status: 'rejected', message: 'merge 必须提供非空 statement' }
+    }
+
+    const current = change.current
+    const record: MemoryRecord = {
+      id: nextRecordId(),
+      topic: change.topic,
+      ...(change.proposed.topicLabel !== undefined
+        ? { topicLabel: change.proposed.topicLabel }
+        : {}),
+      statement: input.decision === 'merge' ? merged : change.proposed.statement,
+      ...(input.rationale !== undefined
+        ? { rationale: input.rationale }
+        : change.proposed.rationale !== undefined
+          ? { rationale: change.proposed.rationale }
+          : {}),
+      confidence: change.proposed.confidence ?? DEFAULT_CONFIDENCE,
+      ...(change.proposed.source !== undefined ? { source: change.proposed.source } : {}),
+      createdAt: at,
+      updatedAt: at,
+      version: current ? current.version + 1 : 1,
+      supersedes: current ? current.id : null,
+      validFrom: at,
+    }
+
+    await store.putActive(record, renderBody(record.statement, record.rationale))
+    if (current) {
+      await store.moveToHistory(
+        change.topic,
+        current.id,
+        `superseded by resolve:${input.decision} ${changeId}`,
+      )
+    }
+    await store.deletePending(changeId)
+    await store.appendJournal({
+      at,
+      action: 'apply',
+      topic: change.topic,
+      id: record.id,
+      changeId,
+      detail: `resolve:${input.decision} v${record.version}${input.reason !== undefined ? ` ${input.reason}` : ''}`,
+    })
+    return { status: 'applied', memory: record, resolved: input.decision }
+  }
+
   async function approve(changeId: string): Promise<UpsertResult> {
     const change = await store.getPending(changeId)
     if (!change) {
@@ -790,6 +905,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     restore,
     approve,
     reject,
+    resolve,
     extract,
   }
 }

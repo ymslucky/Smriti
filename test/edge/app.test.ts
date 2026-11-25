@@ -17,6 +17,7 @@ const fake = vi.hoisted(() => {
     restore: vi.fn(),
     approve: vi.fn(),
     reject: vi.fn(),
+    resolve: vi.fn(),
     extract: vi.fn(),
   }
   const store = {}
@@ -98,6 +99,7 @@ beforeEach(() => {
     restore: vi.fn(async () => null),
     approve: vi.fn(async () => ({ status: 'applied' })),
     reject: vi.fn(async () => true),
+    resolve: vi.fn(async () => ({ status: 'applied' })),
     extract: vi.fn(async () => [{ status: 'applied' }]),
   })
 })
@@ -305,6 +307,49 @@ describe('/v1 REST', () => {
   it('POST /v1/extract 缺少 messages/candidates 返回 400', async () => {
     const response = await handle(jsonRequest('/v1/extract', 'POST', {}), devEnv(), ctx)
     expect(response.status).toBe(400)
+  })
+
+  it('POST /v1/pending/:id/resolve 透传 decision 并在 applied 时同步索引', async () => {
+    fake.service.resolve.mockResolvedValueOnce({ status: 'applied', resolved: 'replace' })
+
+    const response = await handle(
+      jsonRequest('/v1/pending/chg_1/resolve', 'POST', {
+        decision: 'replace',
+        reason: '用户更正了角色',
+      }),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(bodyOf(response)).resolves.toEqual({ status: 'applied', resolved: 'replace' })
+    expect(fake.service.resolve).toHaveBeenCalledWith('chg_1', {
+      decision: 'replace',
+      reason: '用户更正了角色',
+    })
+    await settleWaitUntilCall()
+  })
+
+  it('resolve 的 merge 必须带 statement', async () => {
+    const response = await handle(
+      jsonRequest('/v1/pending/chg_1/resolve', 'POST', { decision: 'merge' }),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(400)
+    expect(fake.service.resolve).not.toHaveBeenCalled()
+  })
+
+  it('resolve 的 decision 非法返回 400', async () => {
+    const response = await handle(
+      jsonRequest('/v1/pending/chg_1/resolve', 'POST', { decision: 'drop' }),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(400)
+    expect(fake.service.resolve).not.toHaveBeenCalled()
   })
 
   it('POST /v1/pending/:id/approve 调用 service.approve 并返回顶层状态', async () => {
@@ -649,6 +694,7 @@ describe('POST /mcp', () => {
       'memory_get',
       'memory_history',
       'memory_list',
+      'memory_resolve',
       'memory_search',
       'memory_topics',
       'memory_upsert',

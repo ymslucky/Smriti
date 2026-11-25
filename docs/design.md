@@ -46,10 +46,17 @@ memories/_index/recent.json              # 最近写入索引，用于召回合�
 
 | 配置 | 行为 |
 |---|---|
-| `CONFLICT_POLICY=manual`（默认） | 槽位冲突进 `_pending`，等人裁决；批准后旧版失效 |
-| `CONFLICT_POLICY=auto` | 仅当提议 `confidence ≥ AUTO_APPLY_MIN_CONFIDENCE`（默认 0.9）且是槽位冲突时直接生效；旧版进 history，可用 restore 回滚；跨主题疑似重复仍然进 pending |
+| `CONFLICT_POLICY=caller`（默认） | 槽位冲突 / 疑似重复返回 `pending_review` 与 `changeId`，由**调用方模型**调用 `memory_resolve` 裁决（replace / merge / keep），裁决立即生效，不经过人工 |
+| `CONFLICT_POLICY=server` | 服务端直接按"新覆盖旧"生效（旧版进 history，可 restore）；疑似重复则跳过写入并记 journal |
+| `CONFLICT_POLICY=manual` | 返回 pending，等人工 approve / reject（兼容旧行为） |
 
-自动生效与 approve 共用同一顺序：先写新记录 → 再移旧版 → 记 journal（`apply`，detail 带 `auto`）。
+`memory_resolve` 的三种决定：
+
+- **replace**：提议取代现行，旧版失效进 history（可 restore 回滚）；
+- **merge**：把提议与现行合并成一条新陈述（必须提供 `statement`）；
+- **keep**：保留现行、丢弃提议，记 `reject` journal。
+
+裁决写进 journal（`resolve:replace|merge|keep`），审计可查；pending 在裁决后立即删除。
 
 ## 常驻记忆（core）
 
