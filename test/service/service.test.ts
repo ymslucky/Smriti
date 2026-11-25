@@ -1214,21 +1214,23 @@ describe('MemoryService 查询面', () => {
     const summaries = await service.topics()
 
     expect(summaries.map((item) => item.topic)).toEqual([
+      'code',
       'code.testing',
       'code.testing.framework',
+      'tooling',
       'tooling.package-manager',
     ])
     expect(summaries.find((item) => item.topic === 'tooling.package-manager')).toEqual({
       topic: 'tooling.package-manager',
       label: '包管理器',
       description: 'pnpm / npm / yarn 的选择、lockfile 与依赖安装习惯',
-      parent: null,
+      parent: 'tooling',
       depth: 1,
       count: 1,
       directCount: 1,
     })
     expect(summaries.find((item) => item.topic === 'code.testing')).toMatchObject({
-      parent: null,
+      parent: 'code',
       depth: 1,
       count: 2,
       directCount: 1,
@@ -1239,6 +1241,19 @@ describe('MemoryService 查询面', () => {
       depth: 2,
       count: 1,
       directCount: 1,
+    })
+    // 只写过子主题时，父主题被合成为树节点：count 含子树，directCount 为 0。
+    expect(summaries.find((item) => item.topic === 'code')).toMatchObject({
+      parent: null,
+      depth: 0,
+      count: 2,
+      directCount: 0,
+    })
+    expect(summaries.find((item) => item.topic === 'tooling')).toMatchObject({
+      parent: null,
+      depth: 0,
+      count: 1,
+      directCount: 0,
     })
   })
 

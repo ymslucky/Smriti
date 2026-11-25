@@ -584,30 +584,42 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       direct.set(record.topic, entry)
     }
 
+    // 只写过子主题时，父主题没有直接记录；仍把它合成为树节点，
+    // 让 UI/命令能展示层级，而不是把子主题都挂在根上。
+    const known = new Set<string>(direct.keys())
+    for (const topic of direct.keys()) {
+      let cursor = parentOf(topic)
+      while (cursor !== undefined) {
+        known.add(cursor)
+        cursor = parentOf(cursor)
+      }
+    }
+
     const summaries: TopicSummary[] = []
-    for (const [topic, entry] of direct) {
+    for (const topic of known) {
       let count = 0
       for (const [other, otherEntry] of direct) {
         if (isWithinTopic(other, topic)) count += otherEntry.count
       }
-      // 父主题取数据里**实际存在**的最近祖先；中间层没写过时直接挂到更上层。
+      // 父主题取数据/合成节点里最近的祖先。
       let parent: string | null = null
       let cursor = parentOf(topic)
       while (cursor !== undefined) {
-        if (direct.has(cursor)) {
+        if (known.has(cursor)) {
           parent = cursor
           break
         }
         cursor = parentOf(cursor)
       }
+      const entry = direct.get(topic)
       summaries.push({
         topic,
-        label: entry.label ?? labelForTopic(topic),
+        label: entry?.label ?? labelForTopic(topic),
         description: descriptionForTopic(topic),
         parent,
         depth: topicDepth(topic),
         count,
-        directCount: entry.count,
+        directCount: entry?.count ?? 0,
       })
     }
     return summaries.sort((left, right) => left.topic.localeCompare(right.topic))
