@@ -39,7 +39,7 @@ docs/ui.md     本文
 
 全部为同源请求、`credentials: 'same-origin'`，前端不处理 token；没有调用任何写入 / 审批 / 删除端点。
 
-与 edge-fix 的最终实现已对表（其确认与 `docs/ui-plan.md` §2 一致）：`totals.topics` 是「有记忆的主题数」（按 `directCount > 0` 统计）；`byTopic` 只含**实际存在记录**的主题（含 `parent` 与子树 `count`），没有记录的主题不出现；`recent` 只有 `{id,topic,statement,updatedAt}`（无 version），所以最近更新不显示版本；401 返回 JSON `{error:{code:'unauthorized'}}`，前端按状态码判定、不看响应体；`/ui` 自身也在鉴权之后，`/ui` 与 `/ui/` 都直接返回 `index.html`，静态资源以绝对路径 `/ui/styles.css`、`/ui/app.js` 原样转发给 `ASSETS`；无 `ASSETS` 绑定时 `/ui` 返回 503 `{error:{code:'assets_unavailable'}}`。
+与 edge-fix 的最终实现已对表（其确认与 `docs/ui-plan.md` §2 一致）：`totals.topics` 是「有记忆的主题数」（按 `directCount > 0` 统计）；`byTopic` 含**实际存在记录**的主题，以及为展示层级而合成的父主题（`directCount = 0`，`parent` 与子树 `count` 有效）；`recent` 只有 `{id,topic,statement,updatedAt}`（无 version），所以最近更新不显示版本；401 返回 JSON `{error:{code:'unauthorized'}}`，前端按状态码判定、不看响应体；`/ui` 自身也在鉴权之后，`/ui` 与 `/ui/` 都直接返回 `index.html`，静态资源以绝对路径 `/ui/styles.css`、`/ui/app.js` 原样转发给 `ASSETS`；无 `ASSETS` 绑定时 `/ui` 返回 503 `{error:{code:'assets_unavailable'}}`。
 
 ## 4. 设计取向（详见 `DESIGN.md`）
 
