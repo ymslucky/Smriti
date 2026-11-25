@@ -9,6 +9,7 @@
  */
 
 import type { MemoryStore, SearchIndex } from './contracts'
+import { labelForTopic } from './topics'
 import type { MemoryRecord, RecallItem, SearchHit } from './types'
 
 export interface RecallDeps {
@@ -78,6 +79,7 @@ export function createRecall(
         push({
           id: record.id,
           topic: record.topic,
+          topicLabel: record.topicLabel ?? labelForTopic(record.topic),
           statement: record.statement,
           core: true,
         })
@@ -101,15 +103,30 @@ export function createRecall(
 
     for (const hit of hits) {
       if (!hydrate) {
-        push({ id: hit.id, topic: hit.topic, statement: hit.statement })
+        push({
+          id: hit.id,
+          topic: hit.topic,
+          topicLabel: labelForTopic(hit.topic),
+          statement: hit.statement,
+        })
         continue
       }
       const record = await loadActive(hit)
       if (record === null) continue
-      push({ id: record.id, topic: record.topic, statement: record.statement })
+      push({
+        id: record.id,
+        topic: record.topic,
+        topicLabel: record.topicLabel ?? labelForTopic(record.topic),
+        statement: record.statement,
+      })
     }
     for (const record of recent) {
-      push({ id: record.id, topic: record.topic, statement: record.statement })
+      push({
+        id: record.id,
+        topic: record.topic,
+        topicLabel: record.topicLabel ?? labelForTopic(record.topic),
+        statement: record.statement,
+      })
     }
 
     return items.slice(0, limit)

@@ -4,7 +4,7 @@
  * 主题由 AI 在写入时自由创建：`memory_upsert` 的 `topic` 只要满足 slug 语法就接受，
  * 首次出现即成为主题；点分表示层级（`identity.role`），最多 3 段。
  * 这里的数据只做三件事：
- * 1. 给常见 id 一个稳定的中文展示名与说明（新主题没传 `topic_label` 时 UI 回退到 id）；
+ * 1. 给常见 id 一个稳定的中文展示名与说明（新主题没传 `topic_label` 时按分段回退中文）；
  * 2. 给自动捕获提供关键词提示；
  * 3. 给文档与测试提供一组推荐写法。
  *
@@ -63,6 +63,12 @@ export const TOPIC_HINTS: readonly TopicHint[] = [
     label: '代码评审',
     description: '评审方式、提交粒度与反馈风格',
     keywords: ['评审', 'review', '代码评审'],
+  },
+  {
+    topic: 'workflow.interaction',
+    label: '协作方式',
+    description: '需求澄清、执行顺序、确认与提问的协作约定',
+    keywords: ['协作', '工作方式', '提示词工程', '先提问', '确认'],
   },
   {
     topic: 'workflow.git',
@@ -277,9 +283,54 @@ export function isWithinTopic(topic: string, scope: string): boolean {
   return topic.startsWith(`${scope}.`)
 }
 
-/** 展示名：优先种子提示的中文名，否则用 id 本身。 */
+/** 没有种子提示时的中文分段回退，尽量让展示名保持中文。 */
+const SEGMENT_LABELS: Readonly<Record<string, string>> = {
+  identity: '身份',
+  role: '角色',
+  communication: '沟通',
+  language: '语言',
+  format: '格式',
+  workflow: '工作流',
+  interaction: '交互',
+  collaboration: '协作',
+  git: 'Git',
+  release: '发布',
+  tooling: '工具',
+  'package-manager': '包管理器',
+  runtime: '运行时',
+  editor: '编辑器',
+  shell: '终端',
+  code: '代码',
+  style: '风格',
+  testing: '测试',
+  review: '评审',
+  quality: '质量',
+  environment: '环境',
+  os: '操作系统',
+  project: '项目',
+  preferences: '偏好',
+  security: '安全',
+  deploy: '部署',
+  docs: '文档',
+  api: '接口',
+  database: '数据库',
+  framework: '框架',
+  naming: '命名',
+  convention: '约定',
+  output: '输出',
+  answer: '回答',
+  model: '模型',
+  agent: '智能体',
+}
+
+/** 展示名：优先种子提示的中文名，其次分段中文，最后回退 id 本身。 */
 export function labelForTopic(topic: string): string {
-  return hintFor(topic)?.label ?? topic
+  const hint = hintFor(topic)
+  if (hint !== undefined) return hint.label
+  return topic
+    .split('.')
+    .map((segment) => SEGMENT_LABELS[segment] ?? segment)
+    .join(' · ')
 }
 
 /** 说明：新主题没有说明，返回空串（UI 用占位文案）。 */

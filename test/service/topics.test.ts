@@ -60,9 +60,10 @@ describe('种子提示', () => {
     for (const id of ids) expect(isValidTopicId(id)).toBe(true)
   })
 
-  it('未知主题回退到 id 本身', () => {
+  it('未知主题按分段回退中文，未知段保留原文', () => {
     expect(hintFor('identity.role')).toBeUndefined()
-    expect(labelForTopic('identity.role')).toBe('identity.role')
+    expect(labelForTopic('identity.role')).toBe('身份 · 角色')
+    expect(labelForTopic('workflow.unknown')).toBe('工作流 · unknown')
     expect(descriptionForTopic('identity.role')).toBe('')
   })
 

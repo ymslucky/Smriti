@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MemoryStore, SearchIndex } from '../../src/contracts'
 import { createRecall } from '../../src/recall'
+import { labelForTopic } from '../../src/topics'
 import type { MemoryRecord, SearchHit } from '../../src/types'
+
+function item(id: string, topic: string, statement: string, extra: Record<string, unknown> = {}) {
+  return { id, topic, topicLabel: labelForTopic(topic), statement, ...extra }
+}
 
 function record(id: string, topic: string, statement: string): MemoryRecord {
   return {
@@ -69,9 +74,9 @@ describe('createRecall', () => {
     expect(getActiveSpy).toHaveBeenCalledWith('workflow.git', 'mem_2')
     expect(getActiveSpy).toHaveBeenCalledWith('code.style', 'mem_deleted')
     expect(items).toEqual([
-      { id: 'mem_2', topic: 'workflow.git', statement: 'R2 最新版本' },
-      { id: 'mem_3', topic: 'tooling.shell', statement: '最近写入 3' },
-      { id: 'mem_4', topic: 'environment.os', statement: '最近写入 4' },
+      item('mem_2', 'workflow.git', 'R2 最新版本'),
+      item('mem_3', 'tooling.shell', '最近写入 3'),
+      item('mem_4', 'environment.os', '最近写入 4'),
     ])
   })
 
@@ -86,7 +91,7 @@ describe('createRecall', () => {
     const items = await recall('测试', 5)
 
     expect(getActiveSpy).not.toHaveBeenCalled()
-    expect(items).toEqual([{ id: 'mem_1', topic: 'code.testing', statement: '索引文本' }])
+    expect(items).toEqual([item('mem_1', 'code.testing', '索引文本')])
   })
 
   it('默认水合：R2 中不存在的命中被丢弃', async () => {
@@ -99,7 +104,7 @@ describe('createRecall', () => {
     const items = await recall('风格', 5)
 
     expect(items).toEqual([
-      { id: 'mem_7', topic: 'communication.format', statement: '回答保持简洁' },
+      item('mem_7', 'communication.format', '回答保持简洁'),
     ])
   })
 
@@ -117,7 +122,7 @@ describe('createRecall', () => {
     const items = await recall('风格', 3)
 
     expect(getActiveSpy).toHaveBeenCalledTimes(1)
-    expect(items).toEqual([{ id: 'mem_ok', topic: 'code.style', statement: '正常记录' }])
+    expect(items).toEqual([item('mem_ok', 'code.style', '正常记录')])
   })
 
   it('检索结果内部重复 id 只保留第一条', async () => {
@@ -131,7 +136,7 @@ describe('createRecall', () => {
 
     const items = await recall('测试', 5)
 
-    expect(items).toEqual([{ id: 'mem_1', topic: 'code.testing', statement: '第一次命中' }])
+    expect(items).toEqual([item('mem_1', 'code.testing', '第一次命中')])
   })
 
   it('检索抛错时只返回 recent，不阻塞召回', async () => {
@@ -149,7 +154,7 @@ describe('createRecall', () => {
     expect(recentSpy).toHaveBeenCalledWith(5)
     expect(getActiveSpy).not.toHaveBeenCalled()
     expect(items).toEqual([
-      { id: 'mem_7', topic: 'communication.format', statement: '回答保持简洁' },
+      item('mem_7', 'communication.format', '回答保持简洁'),
     ])
   })
 
@@ -159,7 +164,7 @@ describe('createRecall', () => {
     const recall = createRecall({ store, search })
 
     await expect(recall('运行时', 4)).resolves.toEqual([
-      { id: 'mem_8', topic: 'tooling.runtime', statement: '使用 Node 22' },
+      item('mem_8', 'tooling.runtime', '使用 Node 22'),
     ])
   })
 
@@ -182,8 +187,8 @@ describe('createRecall', () => {
 
     expect(recentSpy).toHaveBeenCalledWith(2)
     expect(items).toEqual([
-      { id: 'mem_a', topic: 'code.style', statement: 'A' },
-      { id: 'mem_b', topic: 'code.style', statement: 'B' },
+      item('mem_a', 'code.style', 'A'),
+      item('mem_b', 'code.style', 'B'),
     ])
   })
 

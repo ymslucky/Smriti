@@ -124,6 +124,8 @@ export interface UpsertResult {
 export interface RecallItem {
   id: string
   topic: string
+  /** 主题展示名（中文标签），便于客户端直接显示。 */
+  topicLabel?: string
   statement: string
   /** 来自 core 主题（常驻上下文）的条目。 */
   core?: boolean

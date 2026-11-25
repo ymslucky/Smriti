@@ -17,6 +17,7 @@ import {
   statementSimilarity,
 } from '../../src/service'
 import type { MemoryServiceDeps } from '../../src/service'
+import { labelForTopic } from '../../src/topics'
 import type {
   ArchivedRecord,
   JournalEvent,
@@ -1303,8 +1304,8 @@ describe('MemoryService.recall', () => {
     const merged = await service.recall('pnpm', 5)
 
     expect(merged).toEqual([
-      { id: pnpm.id, topic: pnpm.topic, statement: '统一用 pnpm' },
-      { id: vitest.id, topic: vitest.topic, statement: '统一用 vitest' },
+      { id: pnpm.id, topic: pnpm.topic, topicLabel: labelForTopic(pnpm.topic), statement: '统一用 pnpm' },
+      { id: vitest.id, topic: vitest.topic, topicLabel: labelForTopic(vitest.topic), statement: '统一用 vitest' },
     ])
   })
 
@@ -1323,7 +1324,14 @@ describe('MemoryService.recall', () => {
 
     const items = await service.recall('vitest', 5)
 
-    expect(items).toEqual([{ id: kept.id, topic: kept.topic, statement: kept.statement }])
+    expect(items).toEqual([
+      {
+        id: kept.id,
+        topic: kept.topic,
+        topicLabel: labelForTopic(kept.topic),
+        statement: kept.statement,
+      },
+    ])
   })
 
   it('limit 截断，limit <= 0 返回空', async () => {

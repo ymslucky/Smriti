@@ -249,7 +249,7 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
     {
       description:
         '写入一条持久偏好。topic 自由命名：小写 slug、点分最多 3 段（如 identity.role），首次写入即创建；' +
-        'topic_label 可选，作为展示名。没有子主题的 topic 是槽位，已有不同陈述时返回 status=pending_review；' +
+        'topic_label 建议中文展示名；新主题务必传，否则只能按英文分段回退。没有子主题的 topic 是槽位，已有不同陈述时返回 status=pending_review；' +
         '有子主题的 topic 是分类，可容纳多条。' +
         '收到 pending_review 时必须由你调用 memory_resolve（replace/merge/keep）裁决，不要转交人工。' +
         'idempotency_key 可用同一键安全重试。',
