@@ -145,6 +145,14 @@ export function parseBody(
     record.topicLabel = metadata.topic_label
   }
 
+  // 时间维度：validFrom 缺省按 createdAt；validTo 存在即表示已归档/失效（空串 = 显式 null）。
+  if (isNonEmptyString(metadata.valid_from)) {
+    record.validFrom = metadata.valid_from
+  }
+  if (metadata.valid_to !== undefined) {
+    record.validTo = metadata.valid_to === '' ? null : metadata.valid_to
+  }
+
   if ('supersedes' in metadata) {
     record.supersedes = metadata.supersedes === '' ? null : metadata.supersedes
   }
@@ -169,6 +177,13 @@ export function serializeMetadata(record: MemoryRecord): Record<string, string> 
   // 主题展示名由写入方给出；截断到 80 字符，避免超出 R2 customMetadata 限制。
   if (typeof record.topicLabel === 'string' && record.topicLabel.trim() !== '') {
     metadata.topic_label = record.topicLabel.trim().slice(0, 80)
+  }
+  if (record.validFrom !== undefined) {
+    metadata.valid_from = record.validFrom
+  }
+  // 空串区分「显式失效为空」与「字段缺失」，与 supersedes 的写法一致。
+  if (record.validTo !== undefined) {
+    metadata.valid_to = record.validTo ?? ''
   }
   // 用空字符串区分「显式 null」与「字段缺失」，保证 round-trip。
   if (record.supersedes !== undefined) {

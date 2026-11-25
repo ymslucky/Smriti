@@ -14,6 +14,7 @@ import type { CallToolResult } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import type { MemoryService } from '../contracts'
 import type { Env } from '../env'
+import { memoryServiceOptions } from '../env'
 import { createAiSearch } from '../search/ai-search'
 import { createMemoryService } from '../service'
 import { createR2Store } from '../storage/r2-store'
@@ -38,6 +39,9 @@ const DEFAULT_SEARCH_LIMIT = 10
 const MAX_SEARCH_LIMIT = 50
 const DEFAULT_LIST_LIMIT = 50
 const MAX_LIST_LIMIT = 200
+/** 历史查询默认/上限条数。 */
+const DEFAULT_HISTORY_LIMIT = 100
+const MAX_HISTORY_LIMIT = 200
 
 /**
  * 工具输入 schema。注册与测试共用这一份定义，避免两处漂移。
@@ -78,6 +82,17 @@ export const toolSchemas = {
     topic: topicSchema,
     id: z.string().min(1, 'id 不能为空'),
     reason: z.string().min(1, 'reason 不能为空'),
+  }),
+  memory_history: z.object({
+    topic: topicSchema.optional(),
+    at: z
+      .string()
+      .min(1)
+      .refine((value) => !Number.isNaN(Date.parse(value)), {
+        message: 'at 必须是 ISO 8601 时间字符串',
+      })
+      .optional(),
+    limit: z.number().int().min(1).max(MAX_HISTORY_LIMIT).optional(),
   }),
 } as const
 
@@ -274,6 +289,25 @@ export function createSmritiMcpServer(service: MemoryService, hooks: McpWriteHoo
       }),
   )
 
+  server.registerTool(
+    'memory_history',
+    {
+      description:
+        '查询记忆历史：不带 at 返回归档记录（被取代或删除的版本，含 validTo 与归档原因）；' +
+        '带 at（ISO 8601）返回该时刻有效的事实（现行 + 历史合并过滤）。topic 可选，limit 默认 100、上限 200。',
+      inputSchema: toolSchemas.memory_history,
+    },
+    async ({ topic, at, limit }) =>
+      guarded(async () => {
+        const items = await service.history({
+          ...(topic !== undefined ? { topic } : {}),
+          ...(at !== undefined ? { at } : {}),
+          limit: limit ?? DEFAULT_HISTORY_LIMIT,
+        })
+        return textResult({ ...(at !== undefined ? { at } : {}), items })
+      }),
+  )
+
   return server
 }
 
@@ -306,7 +340,10 @@ export function buildServer(env: Env, ctx?: ExecutionContext): McpServer {
       }
     : {}
 
-  return createSmritiMcpServer(createMemoryService({ store, search }), hooks)
+  return createSmritiMcpServer(
+    createMemoryService({ store, search, ...memoryServiceOptions(env) }),
+    hooks,
+  )
 }
 
 /** 把一个 hostname 或 URL 规范成 hostname；非法值返回 undefined。 */

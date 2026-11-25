@@ -19,12 +19,30 @@ export interface RecallDeps {
    * 仅在已知索引与 R2 一致（测试 / 离线场景）时关闭，避免无谓的逐条 R2 读取。
    */
   hydrate?: boolean
+  /** 常驻（core）记忆的主题前缀；命中的记录每次召回都会排在最前面。 */
+  coreTopicPrefixes?: readonly string[]
+  /** 最多带几条 core 记忆，默认 5。 */
+  coreLimit?: number
+}
+
+const DEFAULT_CORE_LIMIT = 5
+
+/** 主题是否落在任一 core 前缀下（含前缀本身）。 */
+function isCoreTopic(topic: string, prefixes: readonly string[]): boolean {
+  return prefixes.some(
+    (prefix) => topic === prefix || topic.startsWith(`${prefix}.`),
+  )
 }
 
 export function createRecall(
   deps: RecallDeps,
 ): (query: string, limit: number) => Promise<RecallItem[]> {
   const hydrate = deps.hydrate !== false
+  const corePrefixes = deps.coreTopicPrefixes ?? []
+  const coreLimit =
+    typeof deps.coreLimit === 'number' && deps.coreLimit > 0
+      ? Math.trunc(deps.coreLimit)
+      : DEFAULT_CORE_LIMIT
 
   /**
    * 命中 → R2 最新记录。记录已删除返回 null；单条读取失败（索引脏 id 等）
@@ -41,6 +59,31 @@ export function createRecall(
   return async (query, limit) => {
     if (!Number.isFinite(limit) || limit <= 0) return []
 
+    const items: RecallItem[] = []
+    const seen = new Set<string>()
+    const push = (item: RecallItem): void => {
+      if (seen.has(item.id)) return
+      seen.add(item.id)
+      items.push(item)
+    }
+
+    // 常驻记忆（角色 / 语言 / 硬约束）先于检索命中，保证每次都有上下文。
+    if (corePrefixes.length > 0) {
+      const all = await deps.store.listActive()
+      const core = all
+        .filter((record) => isCoreTopic(record.topic, corePrefixes))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, coreLimit)
+      for (const record of core) {
+        push({
+          id: record.id,
+          topic: record.topic,
+          statement: record.statement,
+          core: true,
+        })
+      }
+    }
+
     let hits: SearchHit[] = []
     try {
       hits = await deps.search.search(query, { limit })
@@ -55,14 +98,6 @@ export function createRecall(
     }
 
     const recent = await deps.store.recent(limit)
-
-    const items: RecallItem[] = []
-    const seen = new Set<string>()
-    const push = (item: RecallItem): void => {
-      if (seen.has(item.id)) return
-      seen.add(item.id)
-      items.push(item)
-    }
 
     for (const hit of hits) {
       if (!hydrate) {

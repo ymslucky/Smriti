@@ -12,7 +12,7 @@
  */
 
 import type { MemoryStore, R2Like, R2ObjectLike } from '../contracts'
-import type { JournalEvent, MemoryRecord, PendingChange } from '../types'
+import type { ArchivedRecord, JournalEvent, MemoryRecord, PendingChange } from '../types'
 import { parseBody, serializeMetadata } from './body'
 
 const ACTIVE_PREFIX = 'memories/active/'
@@ -116,8 +116,20 @@ async function listObjects(bucket: R2Like, prefix: string): Promise<ListedObject
 
 /** 从 active key 反解 topic / id；非本布局的 key 返回 null。 */
 function parseActiveKey(key: string): { topic: string; id: string } | null {
-  if (!key.startsWith(ACTIVE_PREFIX) || !key.endsWith('.md')) return null
-  const rest = key.slice(ACTIVE_PREFIX.length, -'.md'.length)
+  return parseRecordKey(key, ACTIVE_PREFIX)
+}
+
+/** 从 history key 反解 topic / id。 */
+function parseHistoryKey(key: string): { topic: string; id: string } | null {
+  return parseRecordKey(key, HISTORY_PREFIX)
+}
+
+function parseRecordKey(
+  key: string,
+  prefix: string,
+): { topic: string; id: string } | null {
+  if (!key.startsWith(prefix) || !key.endsWith('.md')) return null
+  const rest = key.slice(prefix.length, -'.md'.length)
   const slash = rest.indexOf('/')
   if (slash <= 0 || slash === rest.length - 1) return null
   const topic = rest.slice(0, slash)
@@ -136,6 +148,28 @@ async function readActiveObject(
   if (metadata.topic === undefined || metadata.topic === '') metadata.topic = topic
   const record = parseBody(await object.text(), metadata)
   return { ...record, id, topic }
+}
+
+async function readArchivedObject(
+  object: R2ObjectLike,
+  topic: string,
+  id: string,
+): Promise<ArchivedRecord> {
+  const metadata = object.customMetadata !== undefined ? { ...object.customMetadata } : {}
+  if (metadata.topic === undefined || metadata.topic === '') metadata.topic = topic
+  const record = parseBody(await object.text(), metadata)
+  const archived: ArchivedRecord = { ...record, id, topic }
+  if (metadata.moved_at !== undefined && metadata.moved_at !== '') {
+    archived.archivedAt = metadata.moved_at
+  }
+  if (metadata.reason !== undefined && metadata.reason !== '') {
+    archived.archiveReason = metadata.reason
+  }
+  // 老记录可能只有 moved_at：用它兜底 validTo，保证历史条目一定带失效时间。
+  if (archived.validTo === undefined) {
+    archived.validTo = metadata.moved_at !== undefined ? metadata.moved_at : null
+  }
+  return archived
 }
 
 async function readRecentIndex(bucket: R2Like): Promise<RecentEntry[] | null> {
@@ -297,7 +331,16 @@ export function createR2Store(bucket: R2Like): MemoryStore {
       const body = await object.text()
       const metadata: Record<string, string> =
         object.customMetadata !== undefined ? { ...object.customMetadata } : {}
-      metadata.moved_at = new Date().toISOString()
+      const archivedAt = new Date().toISOString()
+      metadata.moved_at = archivedAt
+      // 时间维度：失效时间 = 移入历史的时刻；老记录没有 valid_from 时用 created_at 兜底。
+      metadata.valid_to = archivedAt
+      if (metadata.valid_from === undefined || metadata.valid_from === '') {
+        metadata.valid_from =
+          metadata.created_at !== undefined && metadata.created_at !== ''
+            ? metadata.created_at
+            : archivedAt
+      }
       // reason 是自由文本，截断后再写入元数据，避免超出 R2 customMetadata 的大小限制；
       // 完整的 reason 由调用方写入 journal。
       if (typeof reason === 'string' && reason !== '') metadata.reason = reason.slice(0, 512)
@@ -308,6 +351,44 @@ export function createR2Store(bucket: R2Like): MemoryStore {
       } catch {
         // 同上：缓存更新失败不影响历史迁移。
       }
+    },
+
+    async getHistory(topic: string, id: string): Promise<ArchivedRecord | null> {
+      assertTopic(topic)
+      assertSegment(id, 'id')
+      const object = await bucket.get(historyKey(topic, id))
+      if (object === null) return null
+      return readArchivedObject(object, topic, id)
+    },
+
+    async listHistory(topic?: string): Promise<ArchivedRecord[]> {
+      if (topic !== undefined) assertTopic(topic)
+      const prefix = topic !== undefined ? `${HISTORY_PREFIX}${topic}/` : HISTORY_PREFIX
+      const listed = await listObjects(bucket, prefix)
+      const records: ArchivedRecord[] = []
+      for (const item of listed) {
+        const parsed = parseHistoryKey(item.key)
+        if (parsed === null) continue
+        try {
+          const object = await bucket.get(item.key)
+          if (object === null) continue
+          records.push(await readArchivedObject(object, parsed.topic, parsed.id))
+        } catch (error) {
+          warnSkippedObject(item.key, error)
+        }
+      }
+      records.sort(
+        (left, right) =>
+          (right.validTo ?? '').localeCompare(left.validTo ?? '') ||
+          left.id.localeCompare(right.id),
+      )
+      return records
+    },
+
+    async deleteHistory(topic: string, id: string): Promise<void> {
+      assertTopic(topic)
+      assertSegment(id, 'id')
+      await bucket.delete(historyKey(topic, id))
     },
 
     async putPending(change: PendingChange): Promise<void> {

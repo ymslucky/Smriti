@@ -20,6 +20,16 @@ export interface MemoryRecord {
   updatedAt: IsoDate
   version: number
   supersedes?: string | null
+  /** 事实开始生效的时间；缺省时按 createdAt 处理。 */
+  validFrom?: IsoDate
+  /** 事实失效时间；undefined 表示仍然有效。历史记录必有该字段。 */
+  validTo?: IsoDate | null
+}
+
+/** 已归档（被取代或删除）的记录：多出归档时间与归档原因。 */
+export interface ArchivedRecord extends MemoryRecord {
+  archivedAt?: IsoDate
+  archiveReason?: string
 }
 
 export type PendingKind = 'conflict' | 'possible-duplicate' | 'new-topic'
@@ -65,7 +75,15 @@ export interface SearchHealth {
 
 export interface JournalEvent {
   at: IsoDate
-  action: 'upsert' | 'apply' | 'reject' | 'forget' | 'recall' | 'extract' | 'cleanup'
+  action:
+    | 'upsert'
+    | 'apply'
+    | 'reject'
+    | 'forget'
+    | 'restore'
+    | 'recall'
+    | 'extract'
+    | 'cleanup'
   topic?: string
   id?: string
   changeId?: string
@@ -85,12 +103,16 @@ export interface UpsertResult {
   memory?: MemoryRecord
   change?: PendingChange
   message?: string
+  /** 槽位冲突按 `CONFLICT_POLICY=auto` 自动生效时为 true。 */
+  autoApplied?: boolean
 }
 
 export interface RecallItem {
   id: string
   topic: string
   statement: string
+  /** 来自 core 主题（常驻上下文）的条目。 */
+  core?: boolean
 }
 
 export interface ExtractCandidate {

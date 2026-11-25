@@ -18,6 +18,7 @@ const TOOL_NAMES = [
   'memory_upsert',
   'memory_list',
   'memory_forget',
+  'memory_history',
 ] as const
 
 function fakeService(): MemoryService {
@@ -30,6 +31,8 @@ function fakeService(): MemoryService {
     topics: async () => [],
     recall: async () => [],
     pending: async () => [],
+    history: async () => [],
+    restore: async () => null,
     approve: async () => ({ status: 'applied' }),
     reject: async () => false,
     extract: async () => [],
@@ -130,10 +133,24 @@ describe('MCP 工具 schema', () => {
     expect(toolSchemas.memory_list.safeParse({ limit: 201 }).success).toBe(false)
     expect(toolSchemas.memory_topics.safeParse({}).success).toBe(true)
   })
+
+  it('memory_history 校验 at 与 limit', () => {
+    expect(toolSchemas.memory_history.safeParse({}).success).toBe(true)
+    expect(
+      toolSchemas.memory_history.safeParse({
+        topic: 'identity.role',
+        at: '2026-01-01T00:00:00.000Z',
+        limit: 10,
+      }).success,
+    ).toBe(true)
+    expect(toolSchemas.memory_history.safeParse({ at: 'not-a-date' }).success).toBe(false)
+    expect(toolSchemas.memory_history.safeParse({ limit: 201 }).success).toBe(false)
+    expect(toolSchemas.memory_history.safeParse({ topic: 'Bad Topic' }).success).toBe(false)
+  })
 })
 
 describe('McpServer 构建', () => {
-  it('注册全部 6 个工具并暴露 JSON Schema（不触发网络）', () => {
+  it('注册全部 7 个工具并暴露 JSON Schema（不触发网络）', () => {
     const server = createSmritiMcpServer(fakeService())
     expect(server).toBeInstanceOf(McpServer)
 

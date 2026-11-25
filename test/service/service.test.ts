@@ -9,13 +9,17 @@ import { describe, expect, it } from 'vitest'
 import type { MemoryStore, SearchIndex } from '../../src/contracts'
 import {
   createMemoryService,
+  DEFAULT_AUTO_APPLY_MIN_CONFIDENCE,
   DEFAULT_CONFIDENCE,
   DEFAULT_SEARCH_LIMIT,
-  NEAR_DUPLICATE_THRESHOLD,
+  LOCAL_DUPLICATE_SIMILARITY,
   normalizeStatement,
   statementHash,
+  statementSimilarity,
 } from '../../src/service'
+import type { MemoryServiceDeps } from '../../src/service'
 import type {
+  ArchivedRecord,
   JournalEvent,
   MemoryRecord,
   PendingChange,
@@ -32,6 +36,7 @@ function clone<T>(value: T): T {
 interface HistoryEntry {
   record: MemoryRecord
   reason: string
+  archivedAt?: string
 }
 
 interface RecordedSearch {
@@ -44,7 +49,7 @@ class FakeStore implements MemoryStore {
   readonly active = new Map<string, MemoryRecord>()
   readonly bodies = new Map<string, string>()
   readonly pendingChanges = new Map<string, PendingChange>()
-  readonly history: HistoryEntry[] = []
+  readonly historyEntries: HistoryEntry[] = []
   readonly journal: JournalEvent[] = []
 
   /** 故障注入：非 null 时对应写入操作抛错，用于验证 approve 的失败语义。 */
@@ -52,6 +57,12 @@ class FakeStore implements MemoryStore {
   failMoveWith: Error | null = null
   /** 一次性故障：deletePending 第一次调用抛错，之后恢复正常。 */
   failDeletePendingOnce: Error | null = null
+
+  constructor(private readonly now: () => Date = () => new Date(FIXED_NOW)) {}
+
+  get history(): HistoryEntry[] {
+    return this.historyEntries
+  }
 
   private key(topic: string, id: string): string {
     return `${topic}/${id}`
@@ -78,9 +89,44 @@ class FakeStore implements MemoryStore {
     if (this.failMoveWith) throw this.failMoveWith
     const key = this.key(topic, id)
     const record = this.active.get(key)
-    if (record) this.history.push({ record: clone(record), reason })
+    if (record) {
+      const at = this.now().toISOString()
+      const archived = clone(record)
+      archived.validFrom = archived.validFrom ?? archived.createdAt
+      archived.validTo = at
+      this.historyEntries.push({ record: archived, reason, archivedAt: at })
+    }
     this.active.delete(key)
     this.bodies.delete(key)
+  }
+
+  async getHistory(topic: string, id: string): Promise<ArchivedRecord | null> {
+    const entry = this.historyEntries.find(
+      (item) => item.record.topic === topic && item.record.id === id,
+    )
+    if (entry === undefined) return null
+    return {
+      ...clone(entry.record),
+      ...(entry.archivedAt !== undefined ? { archivedAt: entry.archivedAt } : {}),
+      archiveReason: entry.reason,
+    }
+  }
+
+  async listHistory(topic?: string): Promise<ArchivedRecord[]> {
+    return this.historyEntries
+      .filter((item) => !topic || item.record.topic === topic)
+      .map((item) => ({
+        ...clone(item.record),
+        ...(item.archivedAt !== undefined ? { archivedAt: item.archivedAt } : {}),
+        archiveReason: item.reason,
+      }))
+  }
+
+  async deleteHistory(topic: string, id: string): Promise<void> {
+    const index = this.historyEntries.findIndex(
+      (item) => item.record.topic === topic && item.record.id === id,
+    )
+    if (index >= 0) this.historyEntries.splice(index, 1)
   }
 
   async putPending(change: PendingChange): Promise<void> {
@@ -146,16 +192,20 @@ interface Harness {
   service: ReturnType<typeof createMemoryService>
 }
 
-/** 固定时钟 + 递增 16 位 hex id。 */
-function harness(): Harness {
+/** 固定时钟 + 递增 16 位 hex id；`now` 可注入以实现时间线断言。 */
+function harness(
+  options: { now?: () => Date; service?: Partial<MemoryServiceDeps> } = {},
+): Harness {
   let sequence = 0
-  const store = new FakeStore()
+  const now = options.now ?? (() => new Date(FIXED_NOW))
+  const store = new FakeStore(now)
   const search = new FakeSearch()
   const service = createMemoryService({
     store,
     search,
-    now: () => new Date(FIXED_NOW),
+    now,
     newId: () => (sequence++).toString(16).padStart(16, '0'),
+    ...options.service,
   })
   return { store, search, service }
 }
@@ -202,6 +252,7 @@ describe('MemoryService.upsert', () => {
       updatedAt: ISO,
       version: 1,
       supersedes: null,
+      validFrom: ISO,
     })
     expect(store.active.size).toBe(1)
 
@@ -370,54 +421,69 @@ describe('MemoryService.upsert', () => {
     expect(result.change?.idempotencyKey).toBe('turn-7')
   })
 
-  it('跨 topic 高分近似进入 possible-duplicate pending 且 current 为 null', async () => {
+  it('检索候选按文本相似度判定：分数很低但陈述相同也算可能重复', async () => {
     const { search, service } = harness()
     search.hits = [
       {
         id: 'mem_elsewhere',
         topic: 'tooling.package-manager',
-        statement: '统一用 pnpm',
-        score: 0.9,
+        // 索引里存的是渲染后的正文，判定前要剥掉 Markdown 标题。
+        statement: '# 统一用 pnpm\n\n## 理由\n\nlockfile 一致',
+        score: 0.1,
       },
     ]
 
     const result = await service.upsert({
       topic: 'tooling.runtime',
-      statement: '版本统一用 Node 22',
+      statement: '统一用 pnpm',
     })
 
     expect(result.status).toBe('pending_review')
     expect(result.change?.kind).toBe('possible-duplicate')
     expect(result.change?.topic).toBe('tooling.runtime')
     expect(result.change?.current).toBeNull()
-    expect(result.change?.proposed.statement).toBe('版本统一用 Node 22')
-    expect(search.calls).toEqual([
-      { query: '版本统一用 Node 22', options: { limit: 1 } },
-    ])
+    expect(result.change?.proposed.statement).toBe('统一用 pnpm')
+    expect(search.calls).toEqual([{ query: '统一用 pnpm', options: { limit: 3 } }])
   })
 
-  it('近似分数恰好达到阈值进入 pending', async () => {
+  it('检索分数很高但文本不相似时不判重复（分数不再是门槛）', async () => {
     const { search, service } = harness()
     search.hits = [
-      { id: 'mem_x', topic: 'code.testing', statement: '统一用 vitest', score: NEAR_DUPLICATE_THRESHOLD },
-    ]
-
-    const result = await service.upsert({ topic: 'tooling.runtime', statement: '统一用 Node 22' })
-
-    expect(result.status).toBe('pending_review')
-    expect(result.change?.kind).toBe('possible-duplicate')
-  })
-
-  it('近似分数低于阈值直接 applied', async () => {
-    const { search, service } = harness()
-    search.hits = [
-      { id: 'mem_x', topic: 'code.testing', statement: '统一用 vitest', score: 0.849 },
+      { id: 'mem_x', topic: 'code.testing', statement: '统一用 vitest', score: 0.99 },
     ]
 
     const result = await service.upsert({ topic: 'tooling.runtime', statement: '统一用 Node 22' })
 
     expect(result.status).toBe('applied')
     expect(result.memory?.version).toBe(1)
+  })
+
+  it('本地相似度达到阈值即判可能重复，且不依赖检索分数', async () => {
+    const { search, service } = harness()
+    const base = '统一用 pnpm 安装依赖'
+    const variant = '统一用 pnpm 安装依赖（推荐）'
+    expect(statementSimilarity(variant, base)).toBeGreaterThanOrEqual(LOCAL_DUPLICATE_SIMILARITY)
+
+    await service.upsert({ topic: 'tooling.package-manager', statement: base })
+    search.hits = []
+
+    const result = await service.upsert({ topic: 'tooling.runtime', statement: variant })
+
+    expect(result.status).toBe('pending_review')
+    expect(result.change?.kind).toBe('possible-duplicate')
+    expect(result.change?.current).toBeNull()
+    expect(result.change?.proposed.statement).toBe(variant)
+  })
+
+  it('近似命中同 topic 时不进入 pending（同 topic 由冲突分支处理）', async () => {
+    const { search, service } = harness()
+    search.hits = [
+      { id: 'mem_x', topic: 'tooling.runtime', statement: '用 Node 20', score: 0.99 },
+    ]
+
+    const result = await service.upsert({ topic: 'tooling.runtime', statement: '统一用 Node 22' })
+
+    expect(result.status).toBe('applied')
   })
 
   it('近似命中同 topic 时不进入 pending（同 topic 由冲突分支处理）', async () => {
@@ -618,6 +684,154 @@ describe('MemoryService.upsert', () => {
   })
 })
 
+describe('陈述相似度', () => {
+  it('归一化后相同为 1，无关文本接近 0', () => {
+    expect(statementSimilarity('统一用 pnpm。', '统一用 pnpm')).toBe(1)
+    expect(statementSimilarity('统一用 pnpm', '今天天气不错')).toBeLessThan(0.2)
+    expect(statementSimilarity('', '统一用 pnpm')).toBe(0)
+  })
+})
+
+describe('时间维度与历史', () => {
+  it('新记录带 validFrom；forget 后进入历史并带 validTo', async () => {
+    const { service } = harness()
+
+    const applied = await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    expect(applied.memory?.validFrom).toBe(ISO)
+    expect(applied.memory?.validTo).toBeUndefined()
+
+    const id = applied.memory!.id
+    expect(await service.forget('identity.role', id, '测试删除')).toBe(true)
+
+    const archived = await service.history()
+    expect(archived).toHaveLength(1)
+    expect(archived[0]).toMatchObject({
+      id,
+      topic: 'identity.role',
+      validFrom: ISO,
+      validTo: ISO,
+      archiveReason: '测试删除',
+    })
+    expect(await service.history({ topic: 'identity.role' })).toHaveLength(1)
+    expect(await service.history({ topic: 'tooling.runtime' })).toHaveLength(0)
+  })
+
+  it('history 带 at 时返回该时刻有效的事实', async () => {
+    let clock = Date.parse('2026-01-01T00:00:00.000Z')
+    const { service } = harness({ now: () => new Date(clock) })
+
+    const oldRole = await service.upsert({ topic: 'identity.role', statement: '旧角色' })
+    clock += 1000
+    await service.forget('identity.role', oldRole.memory!.id, '换角色')
+    clock += 1000
+    const newRole = await service.upsert({ topic: 'identity.role', statement: '新角色' })
+
+    const during = await service.history({
+      at: new Date(clock - 1500).toISOString(),
+    })
+    expect(during.map((record) => record.id)).toEqual([oldRole.memory!.id])
+
+    const now = await service.history({ at: new Date(clock + 1).toISOString() })
+    expect(now.map((record) => record.id)).toEqual([newRole.memory!.id])
+    expect(now[0].validTo).toBeUndefined()
+  })
+
+  it('restore 把归档记录恢复为新的现行版本并删除归档', async () => {
+    const { store, service } = harness()
+
+    const applied = await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    await service.forget('identity.role', applied.memory!.id, '误删')
+
+    const restored = await service.restore('identity.role', applied.memory!.id)
+
+    expect(restored).not.toBeNull()
+    expect(restored?.statement).toBe('是工程师')
+    expect(restored?.version).toBe(2)
+    expect(restored?.supersedes).toBeNull()
+    expect(await service.history()).toHaveLength(0)
+    expect((await service.list('identity.role')).map((record) => record.id)).toEqual([
+      restored!.id,
+    ])
+    expect(store.journal.at(-1)).toMatchObject({ action: 'restore', topic: 'identity.role' })
+    expect(await service.restore('identity.role', 'mem_missing')).toBeNull()
+  })
+})
+
+describe('冲突策略', () => {
+  it('auto 且置信度达标：直接生效并把旧版移入 history', async () => {
+    const { store, service } = harness({ service: { conflictPolicy: 'auto' } })
+
+    const first = await service.upsert({
+      topic: 'identity.role',
+      statement: '是工程师',
+      confidence: DEFAULT_AUTO_APPLY_MIN_CONFIDENCE,
+    })
+    const second = await service.upsert({
+      topic: 'identity.role',
+      statement: '是架构师',
+      confidence: DEFAULT_AUTO_APPLY_MIN_CONFIDENCE,
+    })
+
+    expect(second.status).toBe('applied')
+    expect(second.autoApplied).toBe(true)
+    expect(second.memory?.version).toBe(2)
+    expect(second.memory?.supersedes).toBe(first.memory!.id)
+    expect(store.pendingChanges.size).toBe(0)
+    expect(store.history).toHaveLength(1)
+    expect(store.journal.at(-1)).toMatchObject({
+      action: 'apply',
+      detail: expect.stringContaining('auto'),
+    })
+  })
+
+  it('auto 但置信度低于阈值：仍进待裁决', async () => {
+    const { service } = harness({ service: { conflictPolicy: 'auto' } })
+
+    await service.upsert({ topic: 'identity.role', statement: '是工程师', confidence: 0.95 })
+    const second = await service.upsert({
+      topic: 'identity.role',
+      statement: '是架构师',
+      confidence: DEFAULT_AUTO_APPLY_MIN_CONFIDENCE - 0.05,
+    })
+
+    expect(second.status).toBe('pending_review')
+  })
+
+  it('默认 manual：即使高置信度也进待裁决', async () => {
+    const { service } = harness()
+
+    await service.upsert({ topic: 'identity.role', statement: '是工程师', confidence: 0.99 })
+    const second = await service.upsert({
+      topic: 'identity.role',
+      statement: '是架构师',
+      confidence: 0.99,
+    })
+
+    expect(second.status).toBe('pending_review')
+  })
+})
+
+describe('core 常驻召回', () => {
+  it('core 前缀的记录排在召回最前并带 core 标记', async () => {
+    const { service } = harness({
+      service: { coreTopicPrefixes: ['identity'], coreRecallLimit: 2 },
+    })
+
+    const role = await service.upsert({ topic: 'identity.role', statement: '是工程师' })
+    const language = await service.upsert({
+      topic: 'communication.language',
+      statement: '用中文回答',
+    })
+    await service.upsert({ topic: 'tooling.package-manager', statement: '统一用 pnpm' })
+
+    const items = await service.recall('任意', 5)
+
+    expect(items[0]).toMatchObject({ id: role.memory!.id, core: true })
+    expect(items.some((item) => item.id === language.memory!.id && item.core !== true)).toBe(true)
+    expect(items).toHaveLength(3)
+  })
+})
+
 describe('MemoryService.approve', () => {
   it('批准 conflict：旧记录入 history，新记录 version+1 且 supersedes 旧 id', async () => {
     const { store, service } = harness()
@@ -647,6 +861,7 @@ describe('MemoryService.approve', () => {
       updatedAt: ISO,
       version: 2,
       supersedes: current.memory!.id,
+      validFrom: ISO,
     })
 
     expect(store.history).toHaveLength(1)
@@ -667,7 +882,12 @@ describe('MemoryService.approve', () => {
   it('批准 possible-duplicate：无 current 时写 version 1 且不产生 history', async () => {
     const { store, search, service } = harness()
     search.hits = [
-      { id: 'mem_elsewhere', topic: 'tooling.package-manager', statement: '统一用 pnpm', score: 0.9 },
+      {
+        id: 'mem_elsewhere',
+        topic: 'tooling.package-manager',
+        statement: '# 统一用 Node 22',
+        score: 0.2,
+      },
     ]
 
     const pending = await service.upsert({

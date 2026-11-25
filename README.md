@@ -2,14 +2,15 @@
 
 > 给 dsh 的永久记忆网关：R2 存真源，Cloudflare AI Search 做检索，MCP 暴露读写工具。
 
-状态：M0–M4 完成，已部署（`typecheck` + 245 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
+状态：M0–M4 完成，已部署（`typecheck` + 264 个测试通过，`wrangler deploy --dry-run` 通过）。设计见 [docs/design.md](docs/design.md)，计划见 [docs/plan.md](docs/plan.md)，WebUI 见 [docs/ui.md](docs/ui.md)，MCP 教程页见 [docs/mcp.md](docs/mcp.md)，部署见 [docs/deploy.md](docs/deploy.md)。
 
 ## 它做什么
 
-- 模型通过 MCP 工具 `memory_search` / `memory_get` / `memory_topics` / `memory_upsert` / `memory_list` / `memory_forget` 读写偏好；
+- 模型通过 MCP 工具 `memory_search` / `memory_get` / `memory_topics` / `memory_upsert` / `memory_list` / `memory_forget` / `memory_history` 读写偏好；
 - 只存精炼偏好，**主题由 AI 在写入时创建**：小写 slug、点分最多 3 段（如 `identity.role`），没有固定词表；
-- 有子主题的 topic 是分类（可容纳多条）；没有子主题的 topic 是槽位，新陈述不直接覆盖，进 `_pending` 等人工裁决；
-- 新偏好直接生效；删除是软删除，旧版本保留 30 天；
+- 有子主题的 topic 是分类（可容纳多条）；没有子主题的 topic 是槽位，新陈述不直接覆盖，进 `_pending` 等人工裁决（`CONFLICT_POLICY=auto` 时高置信度冲突自动生效，可回滚）；
+- 每条记录带时间维度 `validFrom` / `validTo`：删除是**标记失效**并移入 history（保留 30 天），可查「某时刻有效的事实」，也可 `restore` 回滚；
+- `identity` 前缀下的记忆默认作为 core（常驻上下文），每次召回优先带上；
 - 人用 `/memory review` 批准或拒绝冲突。
 
 ## 架构
@@ -47,6 +48,8 @@ dsh 插件 ──MCP/REST──▶ Worker（本仓库）
 | POST | `/v1/pending/:id/reject` | 拒绝 |
 | GET | `/v1/stats` | WebUI 概览聚合（只读） |
 | GET | `/v1/memories?topic=&limit=` | WebUI 记忆列表（只读，limit 默认 200 / 上限 500） |
+| GET | `/v1/history?topic=&limit=&at=` | 归档历史；带 `at` 时返回该时刻有效的事实（active + history 合并），limit 默认 100 / 上限 500 |
+| POST | `/v1/history/:topic/:id/restore` | 回滚：把一条归档记录恢复为现行版本 |
 | GET | `/ui`、`/ui/*` | WebUI 静态资源（先鉴权，再由 `ASSETS` 绑定提供） |
 | GET | `/v1/health` | 健康检查（需鉴权） |
 | GET | `/healthz` | 存活探针（免鉴权） |

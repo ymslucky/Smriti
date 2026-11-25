@@ -31,6 +31,7 @@ import {
   topicDepth,
 } from './topics'
 import type {
+  ArchivedRecord,
   ExtractCandidate,
   MemoryRecord,
   PendingChange,
@@ -48,12 +49,34 @@ export interface MemoryServiceDeps {
   now?: () => Date
   /** id 生成注入，默认 16 位 hex；测试可用递增序列。 */
   newId?: () => string
+  /**
+   * 槽位冲突策略：
+   * - `manual`（默认）：冲突进待裁决，等人批；
+   * - `auto`：置信度 ≥ `autoApplyMinConfidence` 的槽位冲突直接生效（旧版进 history，可 restore 回滚）。
+   */
+  conflictPolicy?: 'manual' | 'auto'
+  /** auto 策略的最低置信度，默认 0.9。 */
+  autoApplyMinConfidence?: number
+  /** 常驻（core）记忆的主题前缀；recall 时优先带上。 */
+  coreTopicPrefixes?: readonly string[]
+  /** 召回时最多带几条 core 记忆，默认 5。 */
+  coreRecallLimit?: number
 }
 
 /** 模型未显式给出 confidence 时的默认值。 */
 export const DEFAULT_CONFIDENCE = 0.8
-/** 跨 topic 近似判定阈值：top1 score ≥ 该值才可能进入待裁决。 */
-export const NEAR_DUPLICATE_THRESHOLD = 0.85
+/** auto 策略的默认最低置信度。 */
+export const DEFAULT_AUTO_APPLY_MIN_CONFIDENCE = 0.9
+/** 召回默认带几条 core。 */
+export const DEFAULT_CORE_RECALL_LIMIT = 5
+/**
+ * 本地重复判定阈值：字符二元组 Jaccard 相似度。
+ * 72% 意味着「统一用 pnpm 安装依赖」与「统一用 pnpm」这类改写会命中；
+ * 而语义相近但用词不同的句子不会。真实数据积累后应按分布校准。
+ */
+export const LOCAL_DUPLICATE_SIMILARITY = 0.72
+/** 检索候选进入重复判定的文本相似度下限（检索只负责召回，不负责裁决）。 */
+export const SEARCH_DUPLICATE_SIMILARITY = 0.5
 /** `search()` 未显式指定条数时的默认值。 */
 export const DEFAULT_SEARCH_LIMIT = 10
 export const RECORD_ID_PREFIX = 'mem_'
@@ -112,9 +135,70 @@ function pickLatest(records: readonly MemoryRecord[]): MemoryRecord | undefined 
   return latest
 }
 
+/** 相似度归一化：去掉空白、标点与符号，统一小写。 */
+function normalizeForSimilarity(text: string): string {
+  return text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/** 字符二元组集合；单字符文本退化为单元素集合。 */
+function bigrams(text: string): Set<string> {
+  if (text.length === 0) return new Set<string>()
+  if (text.length === 1) return new Set<string>([text])
+  const set = new Set<string>()
+  for (let index = 0; index < text.length - 1; index += 1) {
+    set.add(text.slice(index, index + 2))
+  }
+  return set
+}
+
+/**
+ * 陈述相似度：字符二元组 Jaccard（0–1）。
+ * 对中文与英文都稳定，不依赖分词或外部模型；这是写入去重的判定依据。
+ */
+export function statementSimilarity(left: string, right: string): number {
+  const a = normalizeForSimilarity(left)
+  const b = normalizeForSimilarity(right)
+  if (a === '' || b === '') return 0
+  if (a === b) return 1
+  const setA = bigrams(a)
+  const setB = bigrams(b)
+  let intersection = 0
+  for (const gram of setA) {
+    if (setB.has(gram)) intersection += 1
+  }
+  const union = setA.size + setB.size - intersection
+  return union === 0 ? 0 : intersection / union
+}
+
+/** 索引里的正文是渲染后的 Markdown；取首行标题作为陈述。 */
+function hitStatementText(text: string): string {
+  const firstLine = text.split('\n', 1)[0] ?? text
+  return firstLine.replace(/^#\s*/u, '').trim() || text.trim()
+}
+
+/** 事实在某一时刻是否有效（validFrom ≤ t < validTo）。 */
+function validAt(record: MemoryRecord, instant: number): boolean {
+  const from = Date.parse(record.validFrom ?? record.createdAt)
+  if (Number.isNaN(from) || from > instant) return false
+  if (record.validTo === undefined || record.validTo === null) return true
+  const to = Date.parse(record.validTo)
+  return Number.isNaN(to) ? true : to > instant
+}
+
 export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   const store: MemoryStore = deps.store
   const searchIndex: SearchIndex = deps.search
+  const conflictPolicy = deps.conflictPolicy ?? 'manual'
+  const autoApplyMinConfidence =
+    typeof deps.autoApplyMinConfidence === 'number' &&
+    Number.isFinite(deps.autoApplyMinConfidence)
+      ? deps.autoApplyMinConfidence
+      : DEFAULT_AUTO_APPLY_MIN_CONFIDENCE
+  const coreTopicPrefixes = deps.coreTopicPrefixes ?? []
+  const coreRecallLimit =
+    typeof deps.coreRecallLimit === 'number' && deps.coreRecallLimit > 0
+      ? Math.trunc(deps.coreRecallLimit)
+      : DEFAULT_CORE_RECALL_LIMIT
 
   const now = (): Date => (deps.now ? deps.now() : new Date())
   const nextId = (): string => (deps.newId ? deps.newId() : randomHex(16))
@@ -136,25 +220,50 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   }
 
   /**
-   * 跨 topic 语义近似检查。检索不可用（本地无绑定 / 限流）时视为无近似，
-   * 保证写入链路不被检索故障阻塞。
+   * 本地最大相似项（跨主题）。索引可能滞后、分数尺度也不透明，所以写入去重
+   * 以本地文本相似度为准，不再用检索分数直接做门槛。
+   */
+  function findLocalSimilar(
+    all: readonly MemoryRecord[],
+    statement: string,
+    topic: string,
+  ): { record: MemoryRecord; similarity: number } | undefined {
+    let best: { record: MemoryRecord; similarity: number } | undefined
+    for (const record of all) {
+      if (record.topic === topic) continue
+      const similarity = statementSimilarity(statement, record.statement)
+      if (similarity < LOCAL_DUPLICATE_SIMILARITY) continue
+      if (best === undefined || similarity > best.similarity) {
+        best = { record, similarity }
+      }
+    }
+    return best
+  }
+
+  /**
+   * 跨 topic 检索候选：检索只负责召回，是否算重复由文本相似度判定。
+   * 检索不可用（本地无绑定 / 限流）时视为无候选，不阻塞写入。
    */
   async function findNearDuplicate(
     statement: string,
     topic: string,
-  ): Promise<SearchHit | undefined> {
+  ): Promise<{ hit: SearchHit; similarity: number } | undefined> {
     let hits: SearchHit[]
     try {
-      hits = await searchIndex.search(statement, { limit: 1 })
+      hits = await searchIndex.search(statement, { limit: 3 })
     } catch {
       return undefined
     }
-    const top = hits[0]
-    if (!top) return undefined
-    if (!Number.isFinite(top.score)) return undefined
-    if (top.score < NEAR_DUPLICATE_THRESHOLD) return undefined
-    if (top.topic === topic) return undefined
-    return top
+    let best: { hit: SearchHit; similarity: number } | undefined
+    for (const hit of hits) {
+      if (hit.topic === topic) continue
+      const similarity = statementSimilarity(statement, hitStatementText(hit.statement))
+      if (similarity < SEARCH_DUPLICATE_SIMILARITY) continue
+      if (best === undefined || similarity > best.similarity) {
+        best = { hit, similarity }
+      }
+    }
+    return best
   }
 
   /**
@@ -268,9 +377,37 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     }
 
     const current = pickLatest(active)
-    // 没有子主题的 topic 是槽位：已有不同陈述时进待裁决；
+    // 没有子主题的 topic 是槽位：已有不同陈述时进待裁决（或按 auto 策略自动生效）；
     // 一旦有子主题（例如写过 code.style.indent），code.style 变成分类，可容纳多条。
     if (current && !hasChildTopics(all, topic)) {
+      if (conflictPolicy === 'auto' && proposed.confidence >= autoApplyMinConfidence) {
+        const record: MemoryRecord = {
+          id: nextRecordId(),
+          topic,
+          ...(topicLabel !== undefined ? { topicLabel } : {}),
+          statement,
+          ...(input.rationale !== undefined ? { rationale: input.rationale } : {}),
+          confidence: proposed.confidence,
+          ...(input.source !== undefined ? { source: input.source } : {}),
+          createdAt: at,
+          updatedAt: at,
+          version: current.version + 1,
+          supersedes: current.id,
+          validFrom: at,
+        }
+        // 与 approve 相同的顺序：先落新记录，再把旧版移入 history（可 restore 回滚）。
+        await store.putActive(record, renderBody(record.statement, record.rationale))
+        await store.moveToHistory(topic, current.id, `superseded by ${record.id} (auto)`)
+        await store.appendJournal({
+          at,
+          action: 'apply',
+          topic,
+          id: record.id,
+          detail: `auto v${record.version} supersedes ${current.id}`,
+        })
+        return { status: 'applied', memory: record, autoApplied: true }
+      }
+
       const change = await createPendingChange(
         'conflict',
         topic,
@@ -288,12 +425,9 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       return { status: 'pending_review', change }
     }
 
-    // 本地兜底先于 AI Search：索引可能滞后，归一化精确比对更确定，也省一次检索调用。
-    const localDuplicate = all.find(
-      (record) =>
-        record.topic !== topic && normalizeStatement(record.statement) === statement,
-    )
-    if (localDuplicate) {
+    // 本地相似度先行：索引可能滞后，文本相似度也更确定；检索只作为语义召回补充。
+    const localNear = findLocalSimilar(all, statement, topic)
+    if (localNear) {
       const change = await createPendingChange(
         'possible-duplicate',
         topic,
@@ -306,7 +440,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         action: 'upsert',
         topic,
         changeId: change.changeId,
-        detail: `pending:possible-duplicate 本地近似 ${localDuplicate.id}（topic=${localDuplicate.topic}）`,
+        detail: `pending:possible-duplicate 本地相似 ${localNear.similarity.toFixed(2)} ${localNear.record.id}（topic=${localNear.record.topic}）`,
       })
       return { status: 'pending_review', change }
     }
@@ -325,7 +459,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         action: 'upsert',
         topic,
         changeId: change.changeId,
-        detail: `pending:possible-duplicate 近似 ${near.id}（score=${near.score.toFixed(2)}）`,
+        detail: `pending:possible-duplicate 检索相似 ${near.similarity.toFixed(2)} ${near.hit.id}（score=${near.hit.score.toFixed(2)}）`,
       })
       return { status: 'pending_review', change }
     }
@@ -342,6 +476,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       updatedAt: at,
       version: 1,
       supersedes: null,
+      validFrom: at,
     }
     await store.putActive(record, renderBody(record.statement, record.rationale))
     await store.appendJournal({
@@ -442,10 +577,95 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     return summaries.sort((left, right) => left.topic.localeCompare(right.topic))
   }
 
-  const recall = createRecall({ store, search: searchIndex })
+  const recall = createRecall({
+    store,
+    search: searchIndex,
+    coreTopicPrefixes,
+    coreLimit: coreRecallLimit,
+  })
 
   async function pending(): Promise<PendingChange[]> {
     return store.listPending()
+  }
+
+  /**
+   * 历史 / 时间点查询。
+   * - 不传 `at`：返回归档记录（被取代或删除的版本），按失效时间倒序；
+   * - 传 `at`：返回该时刻有效的事实（active 与 history 合并后按 validFrom/validTo 过滤）。
+   */
+  async function history(
+    options: { topic?: string; at?: string; limit?: number } = {},
+  ): Promise<ArchivedRecord[]> {
+    const limit = options.limit ?? 100
+    if (!Number.isFinite(limit) || limit <= 0) return []
+    const max = Math.trunc(limit)
+    const { topic } = options
+
+    if (options.at !== undefined) {
+      const instant = Date.parse(options.at)
+      if (Number.isNaN(instant)) return []
+      const [active, archived] = await Promise.all([
+        store.listActive(topic),
+        store.listHistory(topic),
+      ])
+      const items: ArchivedRecord[] = [
+        ...archived,
+        ...active.map((record) => ({ ...record })),
+      ]
+      return items
+        .filter((record) => validAt(record, instant))
+        .sort(
+          (left, right) =>
+            (left.validFrom ?? left.createdAt).localeCompare(
+              right.validFrom ?? right.createdAt,
+            ) || left.topic.localeCompare(right.topic),
+        )
+        .slice(0, max)
+    }
+
+    const archived = await store.listHistory(topic)
+    return archived.slice(0, max)
+  }
+
+  /**
+   * 回滚：把一条归档记录恢复为现行版本。
+   * 恢复的记录版本号 +1、`supersedes` 指向当前 active；当前 active 被移入 history。
+   */
+  async function restore(topic: string, id: string): Promise<MemoryRecord | null> {
+    const archived = await store.getHistory(topic, id)
+    if (archived === null) return null
+
+    const at = now().toISOString()
+    const active = await store.listActive(topic)
+    const current = pickLatest(active)
+    const record: MemoryRecord = {
+      id: nextRecordId(),
+      topic,
+      ...(archived.topicLabel !== undefined ? { topicLabel: archived.topicLabel } : {}),
+      statement: archived.statement,
+      ...(archived.rationale !== undefined ? { rationale: archived.rationale } : {}),
+      confidence: archived.confidence,
+      ...(archived.source !== undefined ? { source: archived.source } : {}),
+      createdAt: at,
+      updatedAt: at,
+      version: current ? current.version + 1 : Math.max(1, archived.version + 1),
+      supersedes: current ? current.id : null,
+      validFrom: at,
+    }
+
+    await store.putActive(record, renderBody(record.statement, record.rationale))
+    if (current) {
+      await store.moveToHistory(topic, current.id, `superseded by restore ${record.id}`)
+    }
+    await store.deleteHistory(topic, id)
+    await store.appendJournal({
+      at,
+      action: 'restore',
+      topic,
+      id: record.id,
+      detail: `restored ${id} as v${record.version}`,
+    })
+    return record
   }
 
   /**
@@ -491,6 +711,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       updatedAt: at,
       version: current ? current.version + 1 : 1,
       supersedes: current ? current.id : null,
+      validFrom: at,
     }
 
     // 顺序有语义：先落新记录 → 再移旧版 → 最后删 pending。
@@ -565,6 +786,8 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     topics,
     recall,
     pending,
+    history,
+    restore,
     approve,
     reject,
     extract,

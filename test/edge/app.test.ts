@@ -13,6 +13,8 @@ const fake = vi.hoisted(() => {
     topics: vi.fn(),
     recall: vi.fn(),
     pending: vi.fn(),
+    history: vi.fn(),
+    restore: vi.fn(),
     approve: vi.fn(),
     reject: vi.fn(),
     extract: vi.fn(),
@@ -92,6 +94,8 @@ beforeEach(() => {
       { id: 'mem_1', topic: 'code.style', statement: '使用 2 空格缩进' },
     ]),
     pending: vi.fn(async () => []),
+    history: vi.fn(async () => []),
+    restore: vi.fn(async () => null),
     approve: vi.fn(async () => ({ status: 'applied' })),
     reject: vi.fn(async () => true),
     extract: vi.fn(async () => [{ status: 'applied' }]),
@@ -643,6 +647,7 @@ describe('POST /mcp', () => {
     expect(names).toEqual([
       'memory_forget',
       'memory_get',
+      'memory_history',
       'memory_list',
       'memory_search',
       'memory_topics',
@@ -1100,6 +1105,102 @@ describe('P0-3 写入后同步 AI Search 索引', () => {
       expect.any(Error),
     )
     errorSpy.mockRestore()
+  })
+})
+
+describe('GET /v1/history 与回滚', () => {
+  it('返回归档记录，topic 与 limit 透传给 service', async () => {
+    const archived = memoryFixture({
+      id: 'mem_old',
+      topic: 'identity.role',
+      validFrom: '2026-01-01T00:00:00.000Z',
+      validTo: '2026-02-01T00:00:00.000Z',
+    })
+    fake.service.history.mockResolvedValueOnce([archived])
+
+    const response = await handle(
+      new Request('https://smriti.example.com/v1/history?topic=identity.role&limit=5'),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(bodyOf(response)).resolves.toEqual({ items: [archived] })
+    expect(fake.service.history).toHaveBeenCalledWith({ topic: 'identity.role', limit: 5 })
+  })
+
+  it('带 at 时回显时间点并透传', async () => {
+    fake.service.history.mockResolvedValueOnce([])
+    const at = '2026-01-01T00:00:00.000Z'
+
+    const response = await handle(
+      new Request(`https://smriti.example.com/v1/history?at=${encodeURIComponent(at)}`),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(bodyOf(response)).resolves.toEqual({ at, items: [] })
+    expect(fake.service.history).toHaveBeenCalledWith({ at, limit: 100 })
+  })
+
+  it('at 非法或 topic 语法不合法时返回 400', async () => {
+    const badAt = await handle(
+      new Request('https://smriti.example.com/v1/history?at=not-a-date'),
+      devEnv(),
+      ctx,
+    )
+    expect(badAt.status).toBe(400)
+
+    const badTopic = await handle(
+      new Request('https://smriti.example.com/v1/history?topic=Bad%20Topic'),
+      devEnv(),
+      ctx,
+    )
+    expect(badTopic.status).toBe(400)
+    expect(fake.service.history).not.toHaveBeenCalled()
+  })
+
+  it('POST /v1/history/:topic/:id/restore 恢复记录并同步索引', async () => {
+    const record = memoryFixture({ id: 'mem_restored', topic: 'identity.role' })
+    fake.service.restore.mockResolvedValueOnce(record)
+
+    const response = await handle(
+      new Request('https://smriti.example.com/v1/history/identity.role/mem_old/restore', {
+        method: 'POST',
+      }),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(200)
+    await expect(bodyOf(response)).resolves.toEqual({ status: 'restored', memory: record })
+    expect(fake.service.restore).toHaveBeenCalledWith('identity.role', 'mem_old')
+    await settleWaitUntilCall()
+  })
+
+  it('恢复不存在的归档记录返回 404', async () => {
+    const response = await handle(
+      new Request('https://smriti.example.com/v1/history/identity.role/mem_missing/restore', {
+        method: 'POST',
+      }),
+      devEnv(),
+      ctx,
+    )
+
+    expect(response.status).toBe(404)
+    const body = (await bodyOf(response)) as { error: { code: string } }
+    expect(body.error.code).toBe('not_found')
+  })
+
+  it('GET 不走回滚路由', async () => {
+    const response = await handle(
+      new Request('https://smriti.example.com/v1/history/identity.role/mem_old/restore'),
+      devEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(404)
+    expect(fake.service.restore).not.toHaveBeenCalled()
   })
 })
 

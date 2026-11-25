@@ -1,6 +1,7 @@
 /** 模块契约：存储、检索与记忆服务。各实现只依赖这里的窄接口，便于测试替身。 */
 
 import type {
+  ArchivedRecord,
   ExtractCandidate,
   JournalEvent,
   MemoryRecord,
@@ -53,6 +54,10 @@ export interface MemoryStore {
   getActive(topic: string, id: string): Promise<MemoryRecord | null>
   listActive(topic?: string): Promise<MemoryRecord[]>
   moveToHistory(topic: string, id: string, reason: string): Promise<void>
+  /** 读取归档记录（`_history/`）：用于历史查询与回滚。 */
+  getHistory(topic: string, id: string): Promise<ArchivedRecord | null>
+  listHistory(topic?: string): Promise<ArchivedRecord[]>
+  deleteHistory(topic: string, id: string): Promise<void>
   putPending(change: PendingChange): Promise<void>
   getPending(changeId: string): Promise<PendingChange | null>
   listPending(): Promise<PendingChange[]>
@@ -73,6 +78,10 @@ export interface MemoryService {
   topics(): Promise<TopicSummary[]>
   recall(query: string, limit: number): Promise<RecallItem[]>
   pending(): Promise<PendingChange[]>
+  /** 归档历史；传 `at` 时返回该时刻有效的事实（active + history 合并）。 */
+  history(options?: { topic?: string; at?: string; limit?: number }): Promise<ArchivedRecord[]>
+  /** 把一条归档记录恢复为现行版本（撤销 forget / 回滚一次取代）。 */
+  restore(topic: string, id: string): Promise<MemoryRecord | null>
   approve(changeId: string): Promise<UpsertResult>
   reject(changeId: string, reason: string): Promise<boolean>
   extract(candidates: ExtractCandidate[]): Promise<UpsertResult[]>

@@ -64,7 +64,7 @@
       </div>
     </dl>
 
-    <h3 class="subhead" id="tools-title">六个工具</h3>
+    <h3 class="subhead" id="tools-title">七个工具</h3>
     <table class="doc-table tools-table" aria-labelledby="tools-title">
       <caption>工具名与参数由 <code>src/mcp/server.ts</code> 注册，调用参数一律 snake_case。</caption>
       <thead>
@@ -96,7 +96,11 @@
         </tr>
         <tr>
           <td class="cell-tool"><code>memory_forget</code></td>
-          <td class="cell-desc">软删除一条：移入 history 保留 30 天，返回是否命中。reason 必填。</td>
+          <td class="cell-desc">软删除一条：标记失效并移入 history 保留 30 天，返回是否命中。reason 必填。</td>
+        </tr>
+        <tr>
+          <td class="cell-tool"><code>memory_history</code></td>
+          <td class="cell-desc">查历史：不带 at 返回归档记录；带 at（ISO 8601）返回该时刻有效的事实。topic 可选，limit 默认 100、上限 200。</td>
         </tr>
       </tbody>
     </table>
@@ -201,7 +205,7 @@ console.log(body)</code></pre>
     </figure>
 
     <p class="prose">
-      预期 <code>res.status === 200</code>。响应可能是 <code>application/json</code>，也可能是 SSE（<code>event: message</code> 加一行 <code>data: {…}</code>），两者都正常。在输出里找 <code>result.tools</code>，应看到六个名字：<code>memory_search</code>、<code>memory_get</code>、<code>memory_topics</code>、<code>memory_upsert</code>、<code>memory_list</code>、<code>memory_forget</code>。
+      预期 <code>res.status === 200</code>。响应可能是 <code>application/json</code>，也可能是 SSE（<code>event: message</code> 加一行 <code>data: {…}</code>），两者都正常。在输出里找 <code>result.tools</code>，应看到七个名字：<code>memory_search</code>、<code>memory_get</code>、<code>memory_topics</code>、<code>memory_upsert</code>、<code>memory_list</code>、<code>memory_forget</code>、<code>memory_history</code>。
     </p>
 
     <p class="note">
@@ -230,7 +234,7 @@ console.log(body)</code></pre>
     </figure>
 
     <p class="prose">
-      输出同样是 JSON 或 SSE，六个工具名与上一节一致。如果返回 401，先看错误码表里的 Access 两行。
+      输出同样是 JSON 或 SSE，七个工具名与上一节一致。如果返回 401，先看错误码表里的 Access 两行。
     </p>
 
     <h3 class="subhead" id="verify-order">initialize 与 tools/call 的标准顺序</h3>
@@ -240,7 +244,7 @@ console.log(body)</code></pre>
     <ol class="steps">
       <li><strong>initialize</strong>：带上 <code>protocolVersion</code>（当前按 <code>2025-06-18</code> 握手）、<code>capabilities</code> 与 <code>clientInfo</code>；服务端回 <code>serverInfo</code>（name 为 <code>smriti</code>）。</li>
       <li><strong>notifications/initialized</strong>：一条通知，没有 <code>id</code>，不需要等响应。</li>
-      <li><strong>tools/list</strong>：拿到六个工具和各自的输入 schema。</li>
+      <li><strong>tools/list</strong>：拿到七个工具和各自的输入 schema。</li>
       <li><strong>tools/call</strong>：<code>{"name":"memory_search","arguments":{"query":"包管理器"}}</code>，参数名用 snake_case。</li>
     </ol>
     <p class="prose">
@@ -301,7 +305,7 @@ console.log(body)</code></pre>
 
     <ol class="steps">
       <li><strong>安装 Smriti-DSH 插件</strong>：先 <code>pnpm run build</code>，再 <code>dsh plugin add &lt;本机路径或 GitHub 仓库&gt;</code>；在插件配置里填 <code>gatewayUrl</code>，把 service token 写入 credentials 的 <code>CF_ACCESS_CLIENT_ID</code> / <code>CF_ACCESS_CLIENT_SECRET</code>。</li>
-      <li><strong>确认工具出现</strong>：重启 dsh，工具列表里应出现 <code>mcp__smriti__memory_search</code> 等六个工具，前缀全部是 <code>mcp__smriti__</code>。</li>
+      <li><strong>确认工具出现</strong>：重启 dsh，工具列表里应出现 <code>mcp__smriti__memory_search</code> 等七个工具，前缀全部是 <code>mcp__smriti__</code>。</li>
       <li><strong>裁决仍走命令</strong>：冲突进入待裁决后，在 dsh 里用 <code>/memory review</code> 逐条看，用 <code>/memory approve &lt;changeId&gt;</code> 批准；页面上刻意没有裁决按钮。</li>
     </ol>
 

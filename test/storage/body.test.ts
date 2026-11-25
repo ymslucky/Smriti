@@ -142,4 +142,31 @@ describe('serializeMetadata', () => {
     // 未写 topicLabel 时不产生该字段。
     expect(serializeMetadata(makeRecord()).topic_label).toBeUndefined()
   })
+
+  it('round-trips validFrom / validTo through customMetadata', () => {
+    const metadata = serializeMetadata(
+      makeRecord({
+        validFrom: '2026-01-01T00:00:00.000Z',
+        validTo: '2026-02-01T00:00:00.000Z',
+      }),
+    )
+    expect(metadata.valid_from).toBe('2026-01-01T00:00:00.000Z')
+    expect(metadata.valid_to).toBe('2026-02-01T00:00:00.000Z')
+
+    const parsed = parseBody('# Statement\n', {
+      ...metadata,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })
+    expect(parsed.validFrom).toBe('2026-01-01T00:00:00.000Z')
+    expect(parsed.validTo).toBe('2026-02-01T00:00:00.000Z')
+
+    // 现行记录没有 validTo：字段缺失即表示仍然有效。
+    const activeMetadata = serializeMetadata(makeRecord())
+    expect(activeMetadata.valid_to).toBeUndefined()
+    const active = parseBody('# Statement\n', {
+      ...activeMetadata,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })
+    expect(active.validTo).toBeUndefined()
+  })
 })

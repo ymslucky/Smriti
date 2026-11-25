@@ -16,6 +16,7 @@ import { authenticate } from '../auth/access'
 import { extractCandidates } from '../capture'
 import type { SearchIndex } from '../contracts'
 import type { AppDeps, Env } from '../env'
+import { memoryServiceOptions } from '../env'
 import { createMcpFetchHandler } from '../mcp/server'
 import { createAiSearch } from '../search/ai-search'
 import { createMemoryService } from '../service'
@@ -46,6 +47,11 @@ const MCP_METHOD_NOT_ALLOWED_MESSAGE =
   'MCP Streamable HTTP endpoint: send JSON-RPC with POST. Browsers cannot open it directly; see /ui for the dashboard.'
 
 const PENDING_ACTION_ROUTE = /^\/v1\/pending\/([^/]+)\/(approve|reject)$/
+/** 历史回滚：`POST /v1/history/{topic}/{id}/restore`。 */
+const HISTORY_RESTORE_ROUTE = /^\/v1\/history\/([^/]+)\/([^/]+)\/restore$/
+/** `/v1/history` 的默认与最大条数。 */
+const DEFAULT_HISTORY_LIMIT = 100
+const MAX_HISTORY_LIMIT = 500
 
 /** 业务可预期的 4xx；由 handle 的顶层 catch 转成 JSON 错误。 */
 class HttpError extends Error {
@@ -81,7 +87,11 @@ export function buildDeps(env: Env): AppDeps {
   const search = createAiSearch(env.AI_SEARCH, {
     instance: env.AI_SEARCH_INSTANCE ?? 'memory',
   })
-  return { store, search, service: createMemoryService({ store, search }) }
+  return {
+    store,
+    search,
+    service: createMemoryService({ store, search, ...memoryServiceOptions(env) }),
+  }
 }
 
 /** 读取 JSON 对象 body；空 body 视为 `{}`，非法 JSON 抛 400。 */
@@ -469,15 +479,18 @@ export async function handle(
 
     // 只有 POST 的 approve/reject 才算命中路由；其它方法走 404。
     const pendingAction = method === 'POST' ? PENDING_ACTION_ROUTE.exec(pathname) : null
+    const restoreAction = method === 'POST' ? HISTORY_RESTORE_ROUTE.exec(pathname) : null
 
     // 只有已匹配的 /v1 路由才需要构建依赖（R2 / AI Search / service）。
     const needsDeps =
       pendingAction !== null ||
+      restoreAction !== null ||
       (method === 'GET' &&
         (pathname === '/v1/topics' ||
           pathname === '/v1/pending' ||
           pathname === '/v1/stats' ||
-          pathname === '/v1/memories')) ||
+          pathname === '/v1/memories' ||
+          pathname === '/v1/history')) ||
       (method === 'POST' && (pathname === '/v1/recall' || pathname === '/v1/extract'))
     if (!needsDeps) {
       return jsonError(404, 'not_found', `No route for ${method} ${pathname}`)
@@ -551,6 +564,33 @@ export async function handle(
       return json({ items: items.slice(0, limit) })
     }
 
+    // 历史 / 时间点查询：不带 at 返回归档记录；带 at 返回该时刻有效的事实。
+    if (method === 'GET' && pathname === '/v1/history') {
+      const topic = url.searchParams.get('topic')?.trim() ?? ''
+      if (topic !== '' && !isValidTopicId(topic)) {
+        throw new HttpError(
+          400,
+          'invalid_request',
+          'topic must be a lowercase slug (letters / digits / hyphens, max 3 dot-separated segments)',
+        )
+      }
+      const limit = parseQueryLimit(
+        url.searchParams.get('limit'),
+        DEFAULT_HISTORY_LIMIT,
+        MAX_HISTORY_LIMIT,
+      )
+      const at = url.searchParams.get('at')?.trim() ?? ''
+      if (at !== '' && Number.isNaN(Date.parse(at))) {
+        throw new HttpError(400, 'invalid_request', 'at must be an ISO 8601 timestamp')
+      }
+      const items = await service.history({
+        ...(topic === '' ? {} : { topic }),
+        ...(at === '' ? {} : { at }),
+        limit,
+      })
+      return json({ ...(at === '' ? {} : { at }), items })
+    }
+
     if (method === 'POST' && pathname === '/v1/recall') {
       const body = await readJsonObject(request)
       const query = typeof body.query === 'string' ? body.query.trim() : ''
@@ -600,6 +640,27 @@ export async function handle(
         return jsonError(404, 'not_found', `Pending change not found: ${changeId}`)
       }
       return json({ status: 'rejected', applied: false })
+    }
+
+    if (restoreAction) {
+      let topic: string
+      let id: string
+      try {
+        topic = decodeURIComponent(restoreAction[1])
+        id = decodeURIComponent(restoreAction[2])
+      } catch {
+        throw new HttpError(400, 'invalid_request', 'topic and id must be URL encoded')
+      }
+      if (!isValidTopicId(topic)) {
+        throw new HttpError(400, 'invalid_request', 'topic must be a valid slug')
+      }
+      const record = await service.restore(topic, id)
+      if (record === null) {
+        return jsonError(404, 'not_found', `History record not found: ${topic}/${id}`)
+      }
+      // 恢复会写入新的 active 记录并取代旧版，索引需要同步。
+      scheduleSearchSync(ctx, search)
+      return json({ status: 'restored', memory: record })
     }
 
     return jsonError(404, 'not_found', `No route for ${method} ${pathname}`)

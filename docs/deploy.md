@@ -67,6 +67,26 @@ wrangler secret put ACCESS_TEAM_DOMAIN   # 例如 myteam.cloudflareaccess.com
 wrangler secret put ACCESS_AUD           # Access 应用的 Audience
 ```
 
+## 6.2 记忆策略变量（可选，`wrangler.jsonc` 已有默认值）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `CONFLICT_POLICY` | `manual` | 槽位冲突进待裁决；设为 `auto` 时高置信度冲突自动生效，旧版进 history、可 `restore` 回滚 |
+| `AUTO_APPLY_MIN_CONFIDENCE` | `0.9` | `auto` 策略的最低置信度 |
+| `CORE_TOPIC_PREFIXES` | `identity` | 常驻（core）记忆的主题前缀，逗号分隔；召回时优先带上 |
+| `CORE_RECALL_LIMIT` | `5` | 每次召回最多带几条 core |
+
+历史与回滚走 REST（需要 Access 凭据）：
+
+```sh
+# 归档记录
+curl -s "https://smriti.<域名>/v1/history?limit=20" -H "CF-Access-Client-Id: <id>" -H "CF-Access-Client-Secret: <secret>"
+# 某时刻有效的事实
+curl -s "https://smriti.<域名>/v1/history?at=2026-01-01T00:00:00Z" ...
+# 回滚一条归档记录
+curl -s -X POST "https://smriti.<域名>/v1/history/identity.role/<id>/restore" ...
+```
+
 ## 6.1 MCP 来源（可选）
 
 `/mcp` 默认放行同源（请求的 Host）。如果还有其他前端域名要直接调用 MCP，加一个变量：

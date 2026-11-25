@@ -8,12 +8,15 @@ R2 是唯一真源，AI Search 是可重建的派生索引，Worker 网关是唯
 
 **写入**：模型调 MCP `memory_upsert` → 网关校验 topic 与正文 → 查同 topic 的 active：
 
-- 无冲突：写 `memories/active/{topic}/{id}.md` → 审计 → 触发 AI Search 同步 → 返回 `applied`（分类主题可多条并存）；
-- 槽位主题已有不同陈述，或跨主题检索到高分近重复：写 `_pending/` → 返回 `pending_review`，active 不动。
+- 无冲突：写 `memories/active/{topic}/{id}.md`（带 `valid_from`）→ 审计 → 触发 AI Search 同步 → 返回 `applied`（分类主题可多条并存）；
+- 槽位主题已有不同陈述：`CONFLICT_POLICY=manual`（默认）写 `_pending/` 返回 `pending_review`；`auto` 且置信度达标则旧版标失效进 history、新版生效并返回 `applied` + `autoApplied: true`；
+- 跨主题近似（本地文本相似度 ≥ 0.72，或检索候选 ≥ 0.5）写 `_pending/` 返回 `pending_review`。
 
-**裁决**：人执行 `/memory review` → 网关返回旧/新对比 → 批准时旧版移入 `_history/`、新版写 active（`supersedes` 指向旧 id）→ 同步；拒绝时归档 pending，active 不变。
+**裁决**：人执行 `/memory review` → 网关返回旧/新对比 → 批准时旧版 `valid_to = 批准时间` 并移入 `_history/`、新版写 active（`supersedes` 指向旧 id）→ 同步；拒绝时归档 pending，active 不变。
 
-**读取**：`memory_search` 调 AI Search（混合检索 + topic 过滤），命中后按 `topic`+`id` 用 `memory_get` 水合到 R2 现行记录（索引正文是渲染后的 `# statement`，且可能滞后于删除/改写）；已删除或读不到的命中直接丢弃。`memory_get` 直读 R2，绕过索引滞后；召回时把检索结果与最近写入合并去重。
+**删除与回滚**：`memory_forget` 不再物理删除——把记录的 `valid_to` 设为当前时间并移入 history；`GET /v1/history` 可查归档与「某时刻有效的事实」，`POST /v1/history/{topic}/{id}/restore` 把归档记录恢复为新的现行版本（当前 active 同时被取代进 history）。
+
+**读取**：`memory_search` 调 AI Search（混合检索 + topic 过滤），命中后按 `topic`+`id` 用 `memory_get` 水合到 R2 现行记录（索引正文是渲染后的 `# statement`，且可能滞后于删除/改写）；已删除或读不到的命中直接丢弃。`memory_get` 直读 R2，绕过索引滞后；召回时把 core 记忆、检索结果与最近写入合并去重。
 
 **自动召回**：dsh 插件在 `agent/pre-step` 调 `/v1/recall`，把命中偏好格式化为 `<memory_context>` 注入本步消息，同一 turn+step 只注入一次。
 
@@ -29,7 +32,28 @@ memories/_journal/{yyyy}/{mm}/{dd}/{id}.json
 memories/_index/recent.json              # 最近写入索引，用于召回合并
 ```
 
-对象元数据：`topic`、`updated_at`（epoch 毫秒数字字符串，读取兼容旧 ISO）、`version`（数字字符串）。正文是自描述的短 Markdown。
+对象元数据：`topic`、`updated_at`（epoch 毫秒数字字符串，读取兼容旧 ISO）、`version`（数字字符串）、`valid_from` / `valid_to`（ISO；`valid_to` 仅历史记录有）、`topic_label`（可选）。正文是自描述的短 Markdown。
+
+## 时间维度与历史
+
+- 每条记录有 `validFrom`（缺省按 `createdAt`）与可选 `validTo`；`validTo` 为空表示仍然有效；
+- `forget` / 被取代 → `valid_to = 操作时间`，对象移到 `_history/`，`moved_at` 记录归档时间，`reason` 记录原因；
+- `GET /v1/history` 不带 `at` 返回归档记录（按失效时间倒序）；带 `at=ISO` 时把 active 与 history 合并，按 `validFrom ≤ at < validTo` 过滤，回答「那个时刻什么是真的」；
+- `POST /v1/history/{topic}/{id}/restore` 恢复一条归档记录：版本号 +1、`supersedes` 指向当前 active，当前 active 被取代进 history，归档副本删除；
+- 30 天清理只删 `_history/` 对象；恢复窗口与历史查询窗口一致。
+
+## 冲突策略
+
+| 配置 | 行为 |
+|---|---|
+| `CONFLICT_POLICY=manual`（默认） | 槽位冲突进 `_pending`，等人裁决；批准后旧版失效 |
+| `CONFLICT_POLICY=auto` | 仅当提议 `confidence ≥ AUTO_APPLY_MIN_CONFIDENCE`（默认 0.9）且是槽位冲突时直接生效；旧版进 history，可用 restore 回滚；跨主题疑似重复仍然进 pending |
+
+自动生效与 approve 共用同一顺序：先写新记录 → 再移旧版 → 记 journal（`apply`，detail 带 `auto`）。
+
+## 常驻记忆（core）
+
+`CORE_TOPIC_PREFIXES`（默认 `identity`）下的记录视为常驻记忆。`/v1/recall` 每次先带最多 `CORE_RECALL_LIMIT`（默认 5）条 core，再合并检索命中与最近写入，按 id 去重；core 项在返回里带 `core: true`。这让「角色 / 语言 / 硬约束」不依赖检索命中率也始终在场。
 
 ## 主题词表
 
@@ -62,7 +86,9 @@ Cloudflare Access 挡在自定义域名前：
 - AI Search 不可用：`memory_search` 返回空并在结果里带 `degraded: true` + `reason`（不伪装成"没有记忆"），`memory_get` 仍可用；`/v1/stats` 的 `health.aiSearch` 做真实探活并带 `searchError`，`/v1/recall` 降级为 recent 兜底时写一条 error 日志；
 - AI Search 实例名与配置不一致：命名空间里只有一个实例时自动改用它（写 warn），否则降级并报出可见实例名；
 - AI Search 不接受 `topic` 过滤（线上报 `metadata_filter_unknown_field`，通常是实例 metadata schema 没建 `topic` 字段）：`memory_search` 自动退回"放大取回 + 本地精确过滤"，只写一条 warn，检索保持可用；
-- R2 写冲突：单写者，重试一次。
+- 写入去重：本地文本相似度（字符二元组 Jaccard）为准，检索只做候选召回；检索故障时退化为只做本地判定，不阻塞写入；
+- 自动生效（`auto`）在移旧版失败时抛错：新记录已落盘（不丢记忆），旧版仍在 active，可重试或 restore；
+- R2 写冲突：单写者，依赖幂等键与 restore 兜底，不做自动重试。
 
 ## 非目标
 
